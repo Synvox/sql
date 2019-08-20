@@ -1,6 +1,7 @@
 {
   "name": "@synvox/sql",
   "version": "0.1.2",
+  "license": "MIT",
   "main": "dist/index.js",
   "module": "dist/querybuilder.esm.js",
   "typings": "dist/index.d.ts",
