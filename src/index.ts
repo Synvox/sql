@@ -289,6 +289,10 @@ function makeSql(
     }
   }
 
+  async function end() {
+    await (client as Pool).end();
+  }
+
   const boundSql = Object.assign(sql, {
     where,
     raw,
@@ -302,6 +306,7 @@ function makeSql(
     orWhere,
     orWhereOr,
     transaction,
+    end,
   });
 
   type Sql = typeof boundSql;

@@ -195,6 +195,10 @@ describe('speaks postgres', () => {
     `.exec();
   });
 
+  afterAll(async () => {
+    await sql.end();
+  });
+
   it('inserts and queries', async () => {
     await sql`
       create table test.users (
