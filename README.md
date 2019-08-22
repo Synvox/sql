@@ -134,7 +134,7 @@ await sql.transaction(async sql => {
 
 ```js
 await sql.connection(async sql => {
-  // use sql like normal, commit and rollback are handled for you.
+  // use sql like normal. Connection is closed after function ends.
 });
 ```
 
