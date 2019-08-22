@@ -1,10 +1,11 @@
-import { PoolConfig, Pool, QueryResult, PoolClient } from 'pg';
+import { PoolConfig, Pool, QueryResult, PoolClient, Client } from 'pg';
 import Debug from 'debug';
 import { caseMethods, transformKeys, transformKey } from './case';
 
 const debugQuery = Debug('sql:query');
 const debugBinding = Debug('sql:binding');
 const debugTransaction = Debug('sql:transaction');
+const debugError = Debug('sql:errors');
 
 const QueryBuilderSym = Symbol('is query builder');
 const RawQuerySym = Symbol('is raw query');
@@ -33,6 +34,7 @@ interface QueryBuilder {
   maybeOne: () => Promise<unknown>;
   many: () => Promise<unknown[]>;
   one: () => Promise<unknown>;
+  compile: () => string;
 }
 
 type RawQuery = {
@@ -90,7 +92,12 @@ function makeSql(
         state.text = state.text.trim();
         debugQuery(state.text);
         debugBinding(state.values);
-        return await queryClient.query(state);
+        try {
+          return await queryClient.query(state);
+        } catch (e) {
+          debugError('Query failed: ', this.compile());
+          throw e;
+        }
       },
       async maybeMany() {
         const result = await this.exec();
@@ -110,6 +117,12 @@ function makeSql(
       async one() {
         const result = await this.many();
         return result[0];
+      },
+      compile() {
+        const args = state.values;
+        return state.text.replace(/\$[0-9]/gi, () =>
+          Client.prototype.escapeLiteral(String(args.shift()))
+        );
       },
     });
   }
@@ -289,6 +302,25 @@ function makeSql(
     }
   }
 
+  async function connection(caller: (sql: Sql) => Promise<any>) {
+    const isTopLevel = options.depth === 0;
+    const connectionClient = isTopLevel
+      ? (((await client.connect()) as unknown) as PoolClient)
+      : client;
+
+    const sql = makeSql(connectionClient, {
+      ...options,
+      depth: options.depth + 1,
+    });
+
+    try {
+      const result = await caller(sql);
+      return result;
+    } finally {
+      if (isTopLevel) await (connectionClient as PoolClient).release();
+    }
+  }
+
   async function end() {
     await (client as Pool).end();
   }
@@ -306,7 +338,9 @@ function makeSql(
     orWhere,
     orWhereOr,
     transaction,
+    connection,
     end,
+    client: client instanceof Pool ? null : client,
   });
 
   type Sql = typeof boundSql;

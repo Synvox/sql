@@ -448,4 +448,21 @@ describe('speaks postgres', () => {
       await sql`select * from test.users where id=${123}`.maybeMany()
     ).toEqual([]);
   });
+
+  it('supports compiling to a plain string', async () => {
+    expect(
+      await sql`insert into test.users ${sql.insertValues({
+        firstName: 'Ryan',
+        lastName: 'Allred',
+      })}`.compile()
+    ).toEqual(
+      `insert into test.users (first_name, last_name) values ('Ryan', 'Allred')`
+    );
+  });
+
+  it('supports establishing a connection', async () => {
+    expect(await sql.connection(sql => sql`select 1+1 as two`.one())).toEqual({
+      two: 2,
+    });
+  });
 });
