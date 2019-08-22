@@ -3,6 +3,8 @@
 ![Travis (.org)](https://img.shields.io/travis/synvox/sql)
 ![Codecov](https://img.shields.io/codecov/c/github/synvox/sql)
 
+**`sql` is another sql template string library on node-postgres.**
+
 ```
 npm i @synvox/sql
 ```
@@ -126,11 +128,39 @@ await sql.transaction(async sql => {
 });
 ```
 
+## Dedicated Connection
+
+`sql` uses a pool to run queries. To get a version of `sql` backed by a `pg.PoolClient` use `connection`.
+
+```js
+await sql.connection(async sql => {
+  // use sql like normal, commit and rollback are handled for you.
+});
+```
+
+## Compiling queries to strings
+
+To get a sql string representing a query run `compile`.
+
+```js
+// In a migration script
+const migration = sql`
+insert into users ${sql.insertValues({ firstName: 'Ryan' })}
+`.compile(); // insert into users (first_name) values ('Ryan')
+```
+
 ## Closing the Pool
 
 ```js
 await sql.end();
 ```
+
+## Case Transforms
+
+- `sql` will `camelCase` rows from the database
+- `sql` will `snake_case` identifiers to the database when used in a helper function
+
+To change this behavior pass `{caseMethod: 'snake' | 'camel' | 'constant' | 'pascal' | 'none'}` as the `connect` function's second argument.
 
 ## Debugging
 
