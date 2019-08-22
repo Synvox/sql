@@ -164,4 +164,4 @@ To change this behavior pass `{caseMethod: 'snake' | 'camel' | 'constant' | 'pas
 
 ## Debugging
 
-This project uses the excelent `debug` library. Run your app with `DEBUG=sql:*` set to see debug logs.
+This project uses the excellent `debug` library. Run your app with `DEBUG=sql:*` set to see debug logs.
