@@ -3,7 +3,7 @@
 ![Travis (.org)](https://img.shields.io/travis/synvox/sql)
 ![Codecov](https://img.shields.io/codecov/c/github/synvox/sql)
 
-**`sql` is another sql template string library on node-postgres.**
+**`sql` is another sql template string library.**
 
 ```
 npm i @synvox/sql
@@ -43,6 +43,14 @@ await sql`
 const users = await sql`
   select * from users
 `.all<User>();
+```
+
+**`first`** for getting the first row returned form a query.
+
+```ts
+const user = await sql`
+  select * from users
+`.first<User>();
 ```
 
 **`paginate`** for getting the rows returned form a query.
@@ -110,6 +118,7 @@ await sql`
 ```
 
 **Arrays**
+
 Arrays are converted to comma separated values:
 
 ```ts
@@ -126,6 +135,7 @@ await sql`
 ```
 
 **Arrays of Objects**
+
 Arrays of Objects are only supported on insert statements:
 
 ```ts
@@ -193,14 +203,8 @@ To get a sql string representing a query run `compile`.
 ```ts
 // In a migration script
 const migration = sql`
-insert into users ${sql.insertValues({ firstName: "Ryan" })}
+insert into users ${{ firstName: "Ryan" }}
 `.compile(); // insert into users (first_name) values ('Ryan')
-```
-
-## Closing the Pool
-
-```ts
-await sql.end();
 ```
 
 ## Case Transforms
