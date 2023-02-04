@@ -1,190 +1,137 @@
-import { connect } from '../src';
+import { Pool } from "pg";
+import { connect } from "../src";
 
-const sql = connect({});
+const client = new Pool();
+const sql = connect(client);
 
-describe('substitutions', () => {
-  it('supports basic substitution', () => {
+describe("substitutions", () => {
+  it("supports basic substitution", () => {
     expect(sql`select * from users where id=${1}`).toMatchObject({
-      text: 'select * from users where id=$1',
+      text: "select * from users where id=?",
       values: [1],
     });
   });
 
-  it('supports subqueries', () => {
+  it("supports subqueries", () => {
     expect(
       sql`select * from users where id in (${sql`select id from comments where id=${1}`})`
     ).toMatchObject({
-      text:
-        'select * from users where id in (select id from comments where id=$1)',
+      text: "select * from users where id in (select id from comments where id=?)",
       values: [1],
     });
   });
 
-  it('reorders params when a subquery is introduced', () => {
+  it("reorders params when a subquery is introduced", () => {
     expect(
       sql`select * from users where deleted_at=${false} and id in (${sql`select id from comments where id=${1}`})`
     ).toMatchObject({
-      text:
-        'select * from users where deleted_at=$1 and id in (select id from comments where id=$2)',
+      text: "select * from users where deleted_at=? and id in (select id from comments where id=?)",
       values: [false, 1],
     });
   });
 
-  it('supports raw substitutions', () => {
-    expect(sql`select ${sql.raw('column')} from users`).toMatchObject({
-      text: 'select column from users',
+  it("supports raw substitutions", () => {
+    expect(sql`select ${sql.raw("column")} from users`).toMatchObject({
+      text: "select column from users",
       values: [],
     });
   });
 
-  it('supports arrays', () => {
+  it("supports arrays", () => {
     expect(sql`select * from users where id in (${[1, 2, 3]})`).toMatchObject({
-      text: 'select * from users where id in ($1, $2, $3)',
+      text: "select * from users where id in (?, ?, ?)",
       values: [1, 2, 3],
     });
   });
 
-  it('supports conditional substitution', () => {
+  it("supports conditional substitution", () => {
     expect(
-      sql`select * from users ${sql.cond(false, sql`deleted_at is null`)}`
+      sql`select * from users where ${
+        false ? sql`deleted_at is null` : sql`true`
+      }`
     ).toMatchObject({
-      text: 'select * from users ',
+      text: "select * from users where true",
       values: [],
     });
 
     expect(
-      sql`select * from users ${sql.cond(true, sql`where deleted_at is null`)}`
+      sql`select * from users where ${
+        true ? sql`deleted_at is null` : sql`true`
+      }`
     ).toMatchObject({
-      text: 'select * from users where deleted_at is null',
+      text: "select * from users where deleted_at is null",
       values: [],
     });
   });
 
-  it('supports insertValues helper', () => {
+  it("supports inserting values", () => {
     expect(
-      sql`insert into users ${sql.insertValues({
-        name: 'Ryan',
+      sql`insert into users ${{
+        name: "Ryan",
         number: 0,
-      })}`
+      }}`
     ).toMatchObject({
-      text: 'insert into users (name, number) values ($1, $2)',
-      values: ['Ryan', 0],
+      text: 'insert into users ("name", "number") values (?, ?)',
+      values: ["Ryan", 0],
     });
   });
 
-  it('supports setValues helper', () => {
+  it("supports inserting multiple values", () => {
     expect(
-      sql`update users set ${sql.setValues({
-        name: 'Ryan',
-        active: true,
-      })}`
-    ).toMatchObject({
-      text: 'update users set name = $1, active = $2',
-      values: ['Ryan', true],
-    });
-  });
-
-  it('supports setValues helper', () => {
-    expect(
-      sql`update users set ${sql.setValues({
-        name: 'Ryan',
-        active: true,
-      })}`
-    ).toMatchObject({
-      text: 'update users set name = $1, active = $2',
-      values: ['Ryan', true],
-    });
-  });
-
-  it('supports where helper', () => {
-    expect(
-      sql`select * from table_name ${sql.where({ val: 1, val2: false })}`
-    ).toMatchObject({
-      text: 'select * from table_name where (val = $1 and val2 = $2)',
-      values: [1, false],
-    });
-  });
-
-  it('supports whereNot helper', () => {
-    expect(
-      sql`select * from table_name ${sql.whereNot({ val: 1, val2: null })}`
-    ).toMatchObject({
-      text: 'select * from table_name where (val <> $1 and val2 is not null)',
-      values: [1],
-    });
-  });
-
-  it('supports whereOr helper', () => {
-    expect(
-      sql`select * from table_name ${sql.whereOr({ val: 1, val2: null })}`
-    ).toMatchObject({
-      text: 'select * from table_name where (val = $1 or val2 is null)',
-      values: [1],
-    });
-  });
-
-  it('supports orWhere helper', () => {
-    expect(
-      sql`select * from table_name ${sql.where({ bool: false })} ${sql.orWhere({
-        val: 1,
-        val2: null,
-      })}`
-    ).toMatchObject({
-      text:
-        'select * from table_name where (bool = $1) or (val = $2 and val2 is null)',
-      values: [false, 1],
-    });
-  });
-
-  it('supports andWhere helper', () => {
-    expect(
-      sql`select * from table_name ${sql.where({ bool: false })} ${sql.andWhere(
+      sql`insert into users ${[
         {
-          val: 1,
-          val2: null,
-        }
-      )}`
+          name: "Ryan",
+          number: 0,
+        },
+        {
+          name: "Nolan",
+          number: 1,
+        },
+      ]}`
     ).toMatchObject({
-      text:
-        'select * from table_name where (bool = $1) and (val = $2 and val2 is null)',
-      values: [false, 1],
+      text: 'insert into users ("name", "number") values (?, ?),(?, ?)',
+      values: ["Ryan", 0, "Nolan", 1],
     });
   });
 
-  it('supports andWhereNot helper', () => {
+  it("supports setting values", () => {
     expect(
-      sql`select * from table_name ${sql.where({
-        bool: false,
-      })} ${sql.andWhereNot({
-        val: 1,
-        val2: null,
-      })}`
+      sql`update users set ${{
+        name: "Ryan",
+        active: true,
+      }}`
     ).toMatchObject({
-      text:
-        'select * from table_name where (bool = $1) and (val <> $2 and val2 is not null)',
-      values: [false, 1],
+      text: 'update users set "name" = ?, "active" = ?',
+      values: ["Ryan", true],
     });
   });
 
-  it('supports orWhereOr helper', () => {
+  it("supports updating values", () => {
     expect(
-      sql`select * from table_name ${sql.where({
-        bool: false,
-      })} ${sql.orWhereOr({
-        val: 1,
-        val2: null,
-      })}`
+      sql`update users set ${{
+        name: "Ryan",
+        active: true,
+      }}`
     ).toMatchObject({
-      text:
-        'select * from table_name where (bool = $1) or (val = $2 or val2 is null)',
-      values: [false, 1],
+      text: 'update users set "name" = ?, "active" = ?',
+      values: ["Ryan", true],
+    });
+  });
+
+  it("supports where", () => {
+    expect(
+      sql`select * from table_name where ${{ val: 1, val2: false }}`
+    ).toMatchObject({
+      text: 'select * from table_name where ("val" = ? and "val2" = ?)',
+      values: [1, false],
     });
   });
 });
 
-describe('speaks postgres', () => {
+describe("connects to postgres", () => {
   beforeEach(async () => {
     await sql`
+      drop schema if exists test;
       create schema test;
     `.exec();
   });
@@ -196,10 +143,10 @@ describe('speaks postgres', () => {
   });
 
   afterAll(async () => {
-    await sql.end();
+    await client.end();
   });
 
-  it('inserts and queries', async () => {
+  it("inserts and queries", async () => {
     await sql`
       create table test.users (
         id serial primary key,
@@ -209,19 +156,19 @@ describe('speaks postgres', () => {
     `.exec();
 
     await sql`
-      insert into test.users ${sql.insertValues({
-        firstName: 'Ryan',
-        lastName: 'Allred',
-      })}
+      insert into test.users ${{
+        firstName: "Ryan",
+        lastName: "Allred",
+      }}
     `.exec();
 
-    const result = await sql`select * from test.users`.many();
+    const result = await sql`select * from test.users`.all();
 
-    expect(result).toEqual([{ id: 1, firstName: 'Ryan', lastName: 'Allred' }]);
+    expect(result).toEqual([{ id: 1, firstName: "Ryan", lastName: "Allred" }]);
   });
 
-  describe('transactions', () => {
-    it('supports commit', async () => {
+  describe("transactions", () => {
+    it("supports commit", async () => {
       await sql`
         create table test.users (
           id serial primary key,
@@ -231,30 +178,30 @@ describe('speaks postgres', () => {
       `.exec();
 
       try {
-        await sql.transaction(async sql => {
+        await sql.transaction(async (sql) => {
           await sql`
-            insert into test.users ${sql.insertValues({
-              firstName: 'Ryan',
-              lastName: 'Allred',
-            })}
+            insert into test.users ${{
+              firstName: "Ryan",
+              lastName: "Allred",
+            }}
           `.exec();
 
-          const result = await sql`select * from test.users`.many();
+          const result = await sql`select * from test.users`.all();
 
           expect(result).toEqual([
-            { id: 1, firstName: 'Ryan', lastName: 'Allred' },
+            { id: 1, firstName: "Ryan", lastName: "Allred" },
           ]);
         });
       } catch (e) {}
 
-      const result = await sql`select * from test.users`.maybeMany();
+      const result = await sql`select * from test.users`.all();
 
       expect(result).toEqual([
-        { id: 1, firstName: 'Ryan', lastName: 'Allred' },
+        { id: 1, firstName: "Ryan", lastName: "Allred" },
       ]);
     });
 
-    it('supports rollback', async () => {
+    it("supports rollback", async () => {
       await sql`
         create table test.users (
           id serial primary key,
@@ -264,30 +211,30 @@ describe('speaks postgres', () => {
       `.exec();
 
       try {
-        await sql.transaction(async sql => {
+        await sql.transaction(async (sql) => {
           await sql`
-            insert into test.users ${sql.insertValues({
-              firstName: 'Ryan',
-              lastName: 'Allred',
-            })}
+            insert into test.users ${{
+              firstName: "Ryan",
+              lastName: "Allred",
+            }}
           `.exec();
 
-          const result = await sql`select * from test.users`.many();
+          const result = await sql`select * from test.users`.all();
 
           expect(result).toEqual([
-            { id: 1, firstName: 'Ryan', lastName: 'Allred' },
+            { id: 1, firstName: "Ryan", lastName: "Allred" },
           ]);
 
-          throw new Error('rollback');
+          throw new Error("rollback");
         });
       } catch (e) {}
 
-      const result = await sql`select * from test.users`.maybeMany();
+      const result = await sql`select * from test.users`.all();
 
       expect(result).toEqual([]);
     });
 
-    it('supports savepoints', async () => {
+    it("supports savepoints", async () => {
       await sql`
         create table test.users (
           id serial primary key,
@@ -296,50 +243,50 @@ describe('speaks postgres', () => {
         );
       `.exec();
 
-      await sql.transaction(async sql => {
+      await sql.transaction(async (sql) => {
         await sql`
-          insert into test.users ${sql.insertValues({
-            firstName: 'Ryan',
-            lastName: 'Allred',
-          })}
+          insert into test.users ${{
+            firstName: "Ryan",
+            lastName: "Allred",
+          }}
         `.exec();
 
         try {
-          await sql.transaction(async sql => {
+          await sql.transaction(async (sql) => {
             await sql`
-              insert into test.users ${sql.insertValues({
-                firstName: 'Ryan',
-                lastName: 'Allred',
-              })}
+              insert into test.users ${{
+                firstName: "Ryan",
+                lastName: "Allred",
+              }}
             `.exec();
 
-            const result = await sql`select * from test.users`.many();
+            const result = await sql`select * from test.users`.all();
 
             expect(result).toEqual([
-              { id: 1, firstName: 'Ryan', lastName: 'Allred' },
-              { id: 2, firstName: 'Ryan', lastName: 'Allred' },
+              { id: 1, firstName: "Ryan", lastName: "Allred" },
+              { id: 2, firstName: "Ryan", lastName: "Allred" },
             ]);
 
-            throw new Error('rollback');
+            throw new Error("rollback");
           });
         } catch (e) {}
 
-        const result = await sql`select * from test.users`.many();
+        const result = await sql`select * from test.users`.all();
 
         expect(result).toEqual([
-          { id: 1, firstName: 'Ryan', lastName: 'Allred' },
+          { id: 1, firstName: "Ryan", lastName: "Allred" },
         ]);
       });
 
-      const result = await sql`select * from test.users`.maybeMany();
+      const result = await sql`select * from test.users`.all();
 
       expect(result).toEqual([
-        { id: 1, firstName: 'Ryan', lastName: 'Allred' },
+        { id: 1, firstName: "Ryan", lastName: "Allred" },
       ]);
     });
   });
 
-  it('supports one', async () => {
+  it("supports first", async () => {
     await sql`
       create table test.users (
         id serial primary key,
@@ -349,120 +296,152 @@ describe('speaks postgres', () => {
     `.exec();
 
     await sql`
-      insert into test.users ${sql.insertValues({
-        firstName: 'Ryan',
-        lastName: 'Allred',
-      })}
+      insert into test.users ${{
+        firstName: "Ryan",
+        lastName: "Allred",
+      }}
     `.exec();
 
-    const result = await sql`select * from test.users`.one();
+    const result = await sql`select * from test.users`.first();
 
-    expect(result).toEqual({ id: 1, firstName: 'Ryan', lastName: 'Allred' });
+    expect(result).toEqual({ id: 1, firstName: "Ryan", lastName: "Allred" });
 
-    let thrown = null;
-    try {
-      await sql`select * from test.users where id=${123}`.one();
-    } catch (e) {
-      thrown = e;
-    }
-
-    expect(thrown).toBeInstanceOf(Error);
-  });
-
-  it('supports maybeOne', async () => {
-    await sql`
-      create table test.users (
-        id serial primary key,
-        first_name text not null,
-        last_name text not null
-      );
-    `.exec();
-
-    await sql`
-      insert into test.users ${sql.insertValues({
-        firstName: 'Ryan',
-        lastName: 'Allred',
-      })}
-    `.exec();
-
-    const result = await sql`select * from test.users`.maybeOne();
-
-    expect(result).toEqual({ id: 1, firstName: 'Ryan', lastName: 'Allred' });
-
-    expect(
-      await sql`select * from test.users where id=${123}`.maybeOne()
-    ).toEqual(undefined);
-  });
-
-  it('supports many', async () => {
-    await sql`
-      create table test.users (
-        id serial primary key,
-        first_name text not null,
-        last_name text not null
-      );
-    `.exec();
-
-    await sql`
-      insert into test.users ${sql.insertValues({
-        firstName: 'Ryan',
-        lastName: 'Allred',
-      })}
-    `.exec();
-
-    const result = await sql`select * from test.users`.many();
-
-    expect(result).toEqual([{ id: 1, firstName: 'Ryan', lastName: 'Allred' }]);
-
-    let thrown = null;
-    try {
-      await sql`select * from test.users where id=${123}`.many();
-    } catch (e) {
-      thrown = e;
-    }
-
-    expect(thrown).toBeInstanceOf(Error);
-  });
-
-  it('supports maybeMany', async () => {
-    await sql`
-      create table test.users (
-        id serial primary key,
-        first_name text not null,
-        last_name text not null
-      );
-    `.exec();
-
-    await sql`
-      insert into test.users ${sql.insertValues({
-        firstName: 'Ryan',
-        lastName: 'Allred',
-      })}
-    `.exec();
-
-    const result = await sql`select * from test.users`.maybeMany();
-
-    expect(result).toEqual([{ id: 1, firstName: 'Ryan', lastName: 'Allred' }]);
-
-    expect(
-      await sql`select * from test.users where id=${123}`.maybeMany()
-    ).toEqual([]);
-  });
-
-  it('supports compiling to a plain string', async () => {
-    expect(
-      await sql`insert into test.users ${sql.insertValues({
-        firstName: 'Ryan',
-        lastName: 'Allred',
-      })}`.compile()
-    ).toEqual(
-      `insert into test.users (first_name, last_name) values ('Ryan', 'Allred')`
+    expect(await sql`select * from test.users where id=${123}`.first()).toEqual(
+      undefined
     );
   });
 
-  it('supports establishing a connection', async () => {
-    expect(await sql.connection(sql => sql`select 1+1 as two`.one())).toEqual({
+  it("supports all", async () => {
+    await sql`
+      create table test.users (
+        id serial primary key,
+        first_name text not null,
+        last_name text not null
+      );
+    `.exec();
+
+    await sql`
+      insert into test.users ${{
+        firstName: "Ryan",
+        lastName: "Allred",
+      }}
+    `.exec();
+
+    const result = await sql`select * from test.users`.all();
+
+    expect(result).toEqual([{ id: 1, firstName: "Ryan", lastName: "Allred" }]);
+
+    expect(await sql`select * from test.users where id=${123}`.all()).toEqual(
+      []
+    );
+  });
+
+  it("supports compiling to a plain string", async () => {
+    expect(
+      await sql`insert into test.users ${{
+        firstName: "Ryan",
+        lastName: "Allred",
+      }}`.compile()
+    ).toEqual(
+      `insert into test.users ("first_name", "last_name") values ('Ryan', 'Allred')`
+    );
+  });
+
+  it("supports establishing a connection without a transaction", async () => {
+    expect(
+      await sql.connection((sql) => sql`select 1+1 as two`.first())
+    ).toEqual({
       two: 2,
     });
+  });
+
+  it("supports nesting", async () => {
+    await sql`
+      create table test.users (
+        id serial primary key,
+        name text not null
+      );
+    `.exec();
+
+    await sql`
+      create table test.posts (
+        id serial primary key,
+        name text not null
+      );
+    `.exec();
+
+    await sql`
+      create table test.post_likes (
+        id serial primary key,
+        user_id int not null references test.users(id) on delete cascade,
+        post_id int not null references test.posts(id) on delete cascade
+      );
+    `.exec();
+
+    const user = (await sql`insert into test.users ${{
+      name: "Ryan",
+    }} returning *`.first<{ id: number; name: string }>())!;
+
+    const post1 = (await sql`insert into test.posts ${{
+      name: "My Post",
+    }} returning *`.first<{ id: number; name: string }>())!;
+    await sql`insert into test.post_likes ${{
+      userId: user.id,
+      postId: post1.id,
+    }} returning *`.first();
+
+    const post2 = (await sql`insert into test.posts ${{
+      name: "My Post",
+    }} returning *`.first<{ id: number; name: string }>())!;
+    await sql`insert into test.post_likes ${{
+      userId: user.id,
+      postId: post2.id,
+    }} returning *`.first();
+
+    const result = await sql`
+      select
+        users.*,
+        ${sql`
+          select
+            post_likes.*,
+            ${sql`
+              select posts.*
+              from test.posts
+              where posts.id = post_likes.post_id
+              limit 1
+            `.nestFirst()} as post
+          from test.post_likes
+          where post_likes.user_id = users.id
+        `.nest()} as liked_posts
+      from test.users
+      where users.id = ${user.id}
+    `.first();
+
+    expect(result).toMatchInlineSnapshot(`
+      Object {
+        "id": 1,
+        "likedPosts": Array [
+          Object {
+            "id": 1,
+            "post": Object {
+              "id": 1,
+              "name": "My Post",
+            },
+            "postId": 1,
+            "userId": 1,
+          },
+          Object {
+            "id": 2,
+            "post": Object {
+              "id": 2,
+              "name": "My Post",
+            },
+            "postId": 2,
+            "userId": 1,
+          },
+        ],
+        "name": "Ryan",
+      }
+    `);
   });
 });

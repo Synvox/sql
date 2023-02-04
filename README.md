@@ -11,16 +11,16 @@ npm i @synvox/sql
 
 ## Basic Example
 
-```js
-import { connect } from '@synvox/sql';
+```ts
+import { connect } from "@synvox/sql";
+import { Client } from "pg";
 
-const sql = connect({
-  // parameters for the Pool constructor of node-postgres
-});
+const client = new Client(/* ... */); // client from pg
+const sql = connect(client);
 
 const user = await sql`
-  select * from users where id=${1}
-`.one();
+  select * from users where id = ${1}
+`.first<User>();
 
 // do something with user
 ```
@@ -29,7 +29,7 @@ const user = await sql`
 
 **`exec`** for running queries.
 
-```js
+```ts
 await sql`
   create table example (
     id serial primary key
@@ -37,93 +37,141 @@ await sql`
 `.exec();
 ```
 
-**`maybeMany`** for getting the rows returned form a query.
+**`all`** for getting the rows returned form a query.
 
-```js
+```ts
 const users = await sql`
   select * from users
-`.maybeMany();
+`.all<User>();
 ```
 
-**`many`** for getting the rows returned form a query but throw when no rows are returned.
+**`paginate`** for getting the rows returned form a query.
 
-```js
+```ts
 const users = await sql`
   select * from users
-`.many();
+`.paginate<User>(page, 100);
 ```
 
-**`maybeOne`** for getting the first row returned form a query.
-
-```js
-const users = await sql`
-  select * from users
-`.maybeOne();
-```
-
-**`one`** for getting the first row returned form a query and throwing if no rows are returned.
-
-```js
-const users = await sql`
-  select * from users
-`.one();
-```
-
-## Query Helpers
+## Composing Queries
 
 **Sub queries** can be used to compose queries together.
 
-```js
+```ts
 sql`select * from table_name where other_id in (${sql`select id from other_table`}`);
 ```
 
 **`sql.raw`** for building query from a string. This function does not sanitize any inputs so use with care.
 
-```js
-const column = 'id';
+```ts
+const column = "id";
 
-if (!(column in attributes)) throw new Error('...');
+if (!(column in attributes)) throw new Error("...");
 
 return await sql`select ${sql.raw(column)} from table_name`.many();
 ```
 
-**`sql.insertValues`** for inserting data into a table
+**Objects**
 
-```js
-sql`
-  insert into table_name ${sql.insertValues({ key1: value2, key2: value2 })}
+Objects are converted to a sql equivalent based on the query:
+
+```ts
+await sql`
+  insert into users ${{ name: "Ryan", active: false }}
 `.exec();
+// Executes:
+// insert into users(name, active) values ($0, $1)
+// $0 = "Ryan"
+// $1 = false
 ```
 
-**`sql.setValues`** for updating data into a table
-
-```js
-sql`
-  update table_name
-  set ${sql.setValues({ key: value })}
-  where value=${something}
+```ts
+await sql`
+  update users set ${{ name: "Ryan", active: true }}
+  where id = ${1}
 `.exec();
+// Executes:
+// update users set name = $0, active = $1 where id = $2
+// $0 = "Ryan"
+// $1 = true
+// $2 = 1
 ```
 
-**`sql.cond`** for conditionally combining queries together
-
-```js
-sql`
-  select * from table_name
-  ${cond(showDeleted, sql`where deleted_at is not null`)}
+```ts
+await sql`
+  select *
+  from users
+  where ${{ id: 1, active: true }}
 `.exec();
+// Executes:
+// select * from users where (id = $0 and active = $1)
+// $0 = 1
+// $1 = true
 ```
 
-**`where`, `andWhere`, `orWhere`, `andWhereNot`, `orWhereNot`, `andWhereOr`** for building a where clause from an object.
+**Arrays**
+Arrays are converted to comma separated values:
 
-```js
-sql`select * from users ${sql.where({ active: true, orgId: 123 })}`;
+```ts
+await sql`
+  select *
+  from users
+  where id in (${[1, 2, 3]})
+`.exec();
+// Executes:
+// select * from users where id in ($0, $1, $2)
+// $0 = 1
+// $1 = 2
+// $2 = 3
+```
+
+**Arrays of Objects**
+Arrays of Objects are only supported on insert statements:
+
+```ts
+await sql`
+  insert into users ${[
+    { name: "Ryan", active: false },
+    { name: "Nolan", active: false },
+  ]}
+`.exec();
+// Executes:
+// insert into users(name, active) values ($0, $1), ($2, $3)
+// $0 = "Ryan"
+// $1 = false
+// $2 = "Nolan"
+// $3 = false
+```
+
+## Nested Resources
+
+Eager load related data using `nest` and `nestFirst` helpers:
+
+```ts
+await sql`
+  select
+    users.*,
+    ${sql`
+      select
+        post_likes.*,
+        ${sql`
+          select posts.*
+          from test.posts
+          where posts.id = post_likes.post_id
+          limit 1
+        `.nestFirst()} as post
+      from test.post_likes
+      where post_likes.user_id = users.id
+    `.nest()} as liked_posts
+  from test.users
+  where users.id = ${user.id}
+`.first();
 ```
 
 ## Transactions
 
-```js
-await sql.transaction(async sql => {
+```ts
+await sql.transaction(async (sql) => {
   // use sql like normal, commit and rollback are handled for you.
 });
 ```
@@ -132,8 +180,8 @@ await sql.transaction(async sql => {
 
 `sql` uses a pool to run queries. To get a version of `sql` backed by a `pg.PoolClient` use `connection`.
 
-```js
-await sql.connection(async sql => {
+```ts
+await sql.connection(async (sql) => {
   // use sql like normal. Connection is closed after function ends.
 });
 ```
@@ -142,16 +190,16 @@ await sql.connection(async sql => {
 
 To get a sql string representing a query run `compile`.
 
-```js
+```ts
 // In a migration script
 const migration = sql`
-insert into users ${sql.insertValues({ firstName: 'Ryan' })}
+insert into users ${sql.insertValues({ firstName: "Ryan" })}
 `.compile(); // insert into users (first_name) values ('Ryan')
 ```
 
 ## Closing the Pool
 
-```js
+```ts
 await sql.end();
 ```
 

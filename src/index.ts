@@ -1,23 +1,29 @@
-import { PoolConfig, Pool, QueryResult, PoolClient, Client } from 'pg';
-import Debug from 'debug';
-import { caseMethods, transformKeys, transformKey } from './case';
+import Debug from "debug";
+import { Client, Pool, PoolClient, QueryResult } from "pg";
+import { caseMethods, transformKey, transformKeys } from "./case";
 
-const debugQuery = Debug('sql:query');
-const debugBinding = Debug('sql:binding');
-const debugTransaction = Debug('sql:transaction');
-const debugError = Debug('sql:errors');
+const { escapeLiteral, escapeIdentifier } = Client.prototype;
 
-const QueryBuilderSym = Symbol('is query builder');
-const RawQuerySym = Symbol('is raw query');
+const debugQuery = Debug("sql:query");
+const debugBinding = Debug("sql:binding");
+const debugTransaction = Debug("sql:transaction");
+const debugError = Debug("sql:errors");
+
+const QueryBuilderSym = Symbol("is query builder");
+
+export function isQueryBuilder(anything: any): anything is QueryBuilder {
+  return anything && anything[QueryBuilderSym] === true;
+}
 
 type Primitive = string | number | boolean | null;
 
 type Arg =
   | Primitive
   | Primitive[]
+  | Record<string, Primitive>
+  | Record<string, Primitive>[]
   | KeyValuePrimitive
   | QueryBuilderState
-  | RawQuery
   | undefined;
 
 interface QueryBuilderState {
@@ -30,106 +36,124 @@ interface QueryBuilder {
   text: string;
   values: Primitive[];
   exec: () => Promise<QueryResult>;
-  maybeMany: () => Promise<unknown[]>;
-  maybeOne: () => Promise<unknown>;
-  many: () => Promise<unknown[]>;
-  one: () => Promise<unknown>;
+  paginate: (page?: number, per?: number) => Promise<unknown[]>;
+  nest: () => QueryBuilder;
+  nestFirst: () => QueryBuilder;
+  all: <T>() => Promise<T[]>;
+  first: <T>() => Promise<T | undefined>;
   compile: () => string;
 }
-
-type RawQuery = {
-  [RawQuerySym]: boolean;
-  value: string;
-};
 
 type KeyValuePrimitive = {
   [id: string]: Primitive;
 };
 
 type Options = {
-  caseMethod: 'snake' | 'camel' | 'constant' | 'pascal' | 'none';
+  caseMethod: "snake" | "camel" | "constant" | "pascal" | "none";
   depth: number;
 };
 
+type AcceptableClient = Client | Pool | PoolClient;
+
 export function connect(
-  config: PoolConfig,
+  client: AcceptableClient,
   options: Options = {
-    caseMethod: 'snake',
+    caseMethod: "snake",
     depth: 0,
   }
 ) {
-  return makeSql(new Pool(config), { ...options, depth: 0 });
+  return makeSql(client, { ...options, depth: 0 });
 }
 
 function makeSql(
-  client: Pool | PoolClient,
+  client: AcceptableClient,
   options: Options = {
-    caseMethod: 'snake',
+    caseMethod: "snake",
     depth: 0,
   }
 ) {
-  const caseMethodFromDb = caseMethods['camel'];
+  const caseMethodFromDb = caseMethods["camel"];
   const caseMethodToDb = caseMethods[options.caseMethod];
+
+  const sanitizeIdentifier = (key: string) =>
+    escapeIdentifier(transformKey(key, caseMethodToDb));
 
   function QueryBuilder(
     state: QueryBuilderState,
-    queryClient: Pool | PoolClient = client
+    queryClient: AcceptableClient = client
   ): QueryBuilder {
-    // When another query is added to this one, the param numbers need
-    // to be updated.
-    const segments = state.text.split(/\$[0-9]/i);
-    state.text = segments
-      .map((segment, index) => {
-        if (index + 1 === segments.length) return segment;
-        return `${segment}$${index + 1}`;
-      })
-      .join('')
-      .replace(/(\s)+/g, ' ');
-
-    return Object.assign({}, state, {
+    const builder = Object.assign({}, state, {
       [QueryBuilderSym]: true,
+      toNative() {
+        const segments = state.text.split(/\?/i);
+        const text = segments
+          .map((segment, index) => {
+            if (index + 1 === segments.length) return segment;
+            return `${segment}$${index + 1}`;
+          })
+          .join("")
+          .replace(/(\s)+/g, " ")
+          .trim();
+
+        return {
+          text,
+          values: state.values,
+        };
+      },
       async exec() {
-        state.text = state.text.trim();
-        debugQuery(state.text);
-        debugBinding(state.values);
+        const { text, values } = builder.toNative();
+
+        debugQuery(text);
+        debugBinding(values);
         try {
-          return await queryClient.query(state);
+          const result = await queryClient.query({ text, values });
+          return result;
         } catch (e) {
-          debugError('Query failed: ', this.compile());
+          debugError("Query failed: ", this.compile());
           throw e;
         }
       },
-      async maybeMany() {
+      async paginate(page: number = 0, per: number = 250) {
+        page = Math.max(0, page);
+
+        const paginated = sql`
+          with stmt as not materialized (${builder}) select * from stmt limit ${per} offset ${page *
+          per}
+        `;
+
+        return paginated.all();
+      },
+      nest() {
+        return sql`coalesce((select jsonb_agg(subquery) as nested from (${builder}) subquery), '[]'::jsonb)`;
+      },
+      nestFirst() {
+        return sql`(select row_to_json(subquery) as nested from (${builder}) subquery limit 1)`;
+      },
+      async all<T>() {
         const result = await this.exec();
-        return transformKeys(result.rows, caseMethodFromDb);
+        return transformKeys(result.rows, caseMethodFromDb) as T[];
       },
-      async maybeOne() {
-        const rows = await this.maybeMany();
-        const result = rows[0];
-        return result;
-      },
-      async many() {
-        const result = await this.maybeMany();
-        if (result.length === 0)
-          throw new Error('No rows returned from database ');
-        return result;
-      },
-      async one() {
-        const result = await this.many();
+      async first<T>() {
+        const result = await this.all<T>();
         return result[0];
       },
       compile() {
         const args = state.values;
-        return state.text.replace(/\$[0-9]/gi, () =>
-          Client.prototype.escapeLiteral(String(args.shift()))
+        return state.text.replace(/\?/g, () =>
+          escapeLiteral(String(args.shift()))
         );
       },
     });
+
+    return builder;
   }
 
-  function sql(strings: TemplateStringsArray, ...values: Arg[]): QueryBuilder {
+  function unboundSql(
+    strings: TemplateStringsArray,
+    ...values: Arg[]
+  ): QueryBuilder {
     let state: QueryBuilderState = {
-      text: '',
+      text: "",
       values: [],
     };
 
@@ -137,131 +161,125 @@ function makeSql(
       const item = strings[index];
       state.text += item;
 
-      // Handle last item
+      // last item
       if (!(index in values)) {
         continue;
       }
 
       const value = values[index];
-      if (value === undefined) continue;
+      if (value === undefined) {
+      }
 
-      // Handle primitive values
-      if (typeof value !== 'object' || value === null) {
+      // primitive values
+      else if (typeof value !== "object" || value === null) {
         state.values.push(value);
-        state.text += `$0`;
-        continue;
+        state.text += `?`;
       }
 
-      // Handle sub queries
-      if (QueryBuilderSym in value) {
-        const otherQuery = value as QueryBuilder;
-        state.text += otherQuery.text;
-        state.values.push(...otherQuery.values);
-        continue;
+      // sub queries
+      else if (isQueryBuilder(value)) {
+        state.text += value.text;
+        state.values.push(...value.values);
       }
 
-      // Handle arrays
-      if (Array.isArray(value)) {
+      // arrays
+      else if (Array.isArray(value) && typeof value[0] !== "object") {
         const list = value as Primitive[];
-        state.text += list.map(() => `$0`).join(', ');
+        state.text += list.map(() => `?`).join(", ");
         state.values.push(...list);
       }
 
-      // Handle raw queries
-      if (RawQuerySym in value) {
-        const otherQuery = value as RawQuery;
-        state.text += otherQuery.value;
-        continue;
+      // special query type interpolations
+      else {
+        const whereIndex = state.text.lastIndexOf("where");
+        const insertIndex = state.text.lastIndexOf(
+          "insert",
+          whereIndex < 0 ? undefined : whereIndex
+        );
+        const updateIndex = state.text.lastIndexOf(
+          "update",
+          Math.max(insertIndex, whereIndex) < 0
+            ? undefined
+            : Math.max(insertIndex, whereIndex)
+        );
+
+        const isInsert = insertIndex > whereIndex && insertIndex > updateIndex;
+        const isUpdate =
+          !isInsert && updateIndex > whereIndex && updateIndex > insertIndex;
+        const isWhere = !isInsert && !isUpdate;
+
+        // arrays of objects
+        if (
+          Array.isArray(value) &&
+          typeof value[0] === "object" &&
+          value[0] !== null
+        ) {
+          if (isInsert) {
+            const arr = value as Record<string, Primitive>[];
+            // (key1, key2) values (value1, value2)
+            state.text += "(";
+            state.text += Object.keys(arr[0])
+              .map((key) => sanitizeIdentifier(key))
+              .join(", ");
+            state.text += ") values ";
+            state.text += arr
+              .map((obj) => {
+                let text = "(";
+                text += Object.keys(obj)
+                  .map(() => "?")
+                  .join(", ");
+                state.values.push(...Object.values(obj));
+                text += ")";
+                return text;
+              })
+              .join(",");
+          }
+        }
+
+        // objects
+        else if (typeof value === "object" && value !== null) {
+          let obj = value as Record<string, Primitive>;
+
+          if (isInsert) {
+            // (key1, key2) values (value1, value2)
+            state.text += "(";
+            state.text += Object.keys(obj)
+              .map((key) => sanitizeIdentifier(key))
+              .join(", ");
+            state.text += ") values (";
+            state.text += Object.keys(obj)
+              .map(() => "?")
+              .join(", ");
+            state.values.push(...Object.values(obj));
+            state.text += ")";
+          } else if (isUpdate) {
+            // key1 = value1, key2 = value2
+            state.text += Object.entries(obj)
+              .map(([k, v]) => {
+                state.values.push(v);
+                return `${sanitizeIdentifier(k)} = ?`;
+              })
+              .join(", ");
+          } else if (isWhere) {
+            // key1 = value1 and key2 = value2
+            state.text += "(";
+            if (Object.keys(obj).length === 0) state.text += "true";
+            else
+              state.text += Object.entries(obj)
+                .map(([k, v]) => {
+                  if (v !== null) state.values.push(v);
+                  return v === null
+                    ? `${sanitizeIdentifier(k)} is null`
+                    : `${sanitizeIdentifier(k)} = ?`;
+                })
+                .join(" and ");
+            state.text += ")";
+          }
+        }
       }
     }
 
     return QueryBuilder(state);
-  }
-
-  function raw(str: string): RawQuery {
-    return {
-      [RawQuerySym]: true,
-      value: str,
-    };
-  }
-
-  function insertValues(object: KeyValuePrimitive) {
-    return sql`(${raw(
-      Object.keys(object)
-        .map(key => transformKey(key, caseMethodToDb))
-        .join(', ')
-    )}) values (${Object.values(object)})`;
-  }
-
-  function setValues(object: KeyValuePrimitive) {
-    const properties = Object.keys(object)
-      .map(key => transformKey(key, caseMethodToDb))
-      .map(key => `${key} = $0`)
-      .join(`, `);
-
-    return QueryBuilder({
-      text: properties,
-      values: Object.values(object).filter(item => item !== null),
-    });
-  }
-
-  function cond(condition: boolean | any, statement: Arg) {
-    if (condition) return statement;
-    return undefined;
-  }
-
-  function where(
-    object: KeyValuePrimitive,
-    prefix: 'where' | 'and' | 'or' | '' = 'where',
-    inverse: boolean = false,
-    mode: 'and' | 'or' = 'and'
-  ): QueryBuilder {
-    const conditions = Object.keys(object)
-      .map(key => {
-        const transformedKey = transformKey(key, caseMethodToDb);
-        const value = object[key];
-        if (value === null)
-          return `${transformedKey} is${inverse ? ' not ' : ''} null`;
-        return `${transformedKey} ${inverse ? '<>' : '='} $0`;
-      })
-      .join(` ${mode} `);
-
-    return QueryBuilder({
-      text: `${prefix} (${conditions})`,
-      values: Object.values(object).filter(item => item !== null),
-    });
-  }
-
-  function whereNot(
-    object: KeyValuePrimitive,
-    prefix: 'where' | 'and' | 'or' = 'where',
-    mode: 'and' | 'or' = 'and'
-  ) {
-    return where(object, prefix, true, mode);
-  }
-
-  function whereOr(
-    object: KeyValuePrimitive,
-    prefix: 'where' | 'and' | 'or' = 'where',
-    inverse: boolean = false
-  ) {
-    return where(object, prefix, inverse, 'or');
-  }
-
-  function andWhere(object: KeyValuePrimitive, mode: 'and' | 'or' = 'and') {
-    return where(object, 'and', false, mode);
-  }
-
-  function andWhereNot(object: KeyValuePrimitive, mode: 'and' | 'or' = 'and') {
-    return where(object, 'and', true, mode);
-  }
-
-  function orWhere(object: KeyValuePrimitive, inverse: boolean = false) {
-    return where(object, 'or', inverse);
-  }
-
-  function orWhereOr(object: KeyValuePrimitive, inverse: boolean = false) {
-    return where(object, 'or', inverse, 'or');
   }
 
   let txId = 0;
@@ -274,10 +292,10 @@ function makeSql(
     txId++;
     if (txId > Number.MAX_VALUE) txId = 0;
 
-    const beginStmt = isTopLevel ? 'begin' : `savepoint tx${txId}`;
+    const beginStmt = isTopLevel ? "begin" : `savepoint tx${txId}`;
 
     const rollbackStmt = isTopLevel
-      ? 'rollback'
+      ? "rollback"
       : `rollback to savepoint tx${txId}`;
 
     debugTransaction(beginStmt, `(tx${txId})`);
@@ -288,8 +306,8 @@ function makeSql(
       const result = await caller(sql);
 
       if (isTopLevel) {
-        debugTransaction('commit', `(tx${txId})`);
-        await trxClient.query('commit');
+        debugTransaction("commit", `(tx${txId})`);
+        await trxClient.query("commit");
       }
 
       return result;
@@ -304,8 +322,9 @@ function makeSql(
 
   async function connection(caller: (sql: Sql) => Promise<any>) {
     const isTopLevel = options.depth === 0;
-    const connectionClient = isTopLevel
-      ? (((await client.connect()) as unknown) as PoolClient)
+    const createNewConnection = isTopLevel && !(client instanceof Client);
+    const connectionClient = createNewConnection
+      ? ((await client.connect()) as PoolClient)
       : client;
 
     const sql = makeSql(connectionClient, {
@@ -317,33 +336,17 @@ function makeSql(
       const result = await caller(sql);
       return result;
     } finally {
-      if (isTopLevel) await (connectionClient as PoolClient).release();
+      if (createNewConnection) (connectionClient as PoolClient).release();
     }
   }
 
-  async function end() {
-    await (client as Pool).end();
-  }
-
-  const boundSql = Object.assign(sql, {
-    where,
-    raw,
-    insertValues,
-    setValues,
-    cond,
-    whereNot,
-    whereOr,
-    andWhere,
-    andWhereNot,
-    orWhere,
-    orWhereOr,
+  const sql = Object.assign(unboundSql, {
     transaction,
     connection,
-    end,
-    client: client instanceof Pool ? null : client,
+    raw: (text: string) => QueryBuilder({ text, values: [] }),
   });
 
-  type Sql = typeof boundSql;
+  type Sql = typeof sql;
 
-  return Object.freeze(boundSql);
+  return sql;
 }
