@@ -15,7 +15,7 @@ export function isQueryBuilder(anything: any): anything is QueryBuilder {
   return anything && anything[QueryBuilderSym] === true;
 }
 
-type Primitive = string | number | boolean | null;
+type Primitive = string | number | boolean | Date | null;
 
 type Arg =
   | Primitive
@@ -171,7 +171,11 @@ function makeSql(
       }
 
       // primitive values
-      else if (typeof value !== "object" || value === null) {
+      else if (
+        typeof value !== "object" ||
+        value === null ||
+        value instanceof Date
+      ) {
         state.values.push(value);
         state.text += `?`;
       }

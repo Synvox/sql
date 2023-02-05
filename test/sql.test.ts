@@ -12,11 +12,20 @@ describe("substitutions", () => {
     });
   });
 
+  it("supports dates", () => {
+    const d = new Date();
+    expect(sql`select * from users where created_at=${d}`).toMatchObject({
+      text: "select * from users where created_at=?",
+      values: [d],
+    });
+  });
+
   it("supports subqueries", () => {
     expect(
       sql`select * from users where id in (${sql`select id from comments where id=${1}`})`
     ).toMatchObject({
-      text: "select * from users where id in (select id from comments where id=?)",
+      text:
+        "select * from users where id in (select id from comments where id=?)",
       values: [1],
     });
   });
@@ -25,7 +34,8 @@ describe("substitutions", () => {
     expect(
       sql`select * from users where deleted_at=${false} and id in (${sql`select id from comments where id=${1}`})`
     ).toMatchObject({
-      text: "select * from users where deleted_at=? and id in (select id from comments where id=?)",
+      text:
+        "select * from users where deleted_at=? and id in (select id from comments where id=?)",
       values: [false, 1],
     });
   });
