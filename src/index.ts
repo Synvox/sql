@@ -7,36 +7,35 @@ const { escapeLiteral, escapeIdentifier } = Client.prototype;
 const debugQuery = Debug("sql:query");
 const debugBinding = Debug("sql:binding");
 const debugTransaction = Debug("sql:transaction");
-const debugError = Debug("sql:errors");
+const debugError = Debug("sql:error");
 
-const QueryBuilderSym = Symbol("is query builder");
+const statementWeakSet = new WeakSet<Statement>();
 
-export function isQueryBuilder(anything: any): anything is QueryBuilder {
-  return anything && anything[QueryBuilderSym] === true;
+export function isStatement(anything: any): anything is Statement {
+  return anything && statementWeakSet.has(anything);
 }
 
 type Value = any;
 
 type InterpolatedValue =
   | Value
-  | (Value | QueryBuilderState)[]
-  | Record<string, Value | QueryBuilderState>
-  | Record<string, Value | QueryBuilderState>[]
-  | QueryBuilderState;
+  | (Value | StatementState)[]
+  | Record<string, Value | StatementState>
+  | Record<string, Value | StatementState>[]
+  | StatementState;
 
-interface QueryBuilderState {
+interface StatementState {
   text: string;
   values: Value[];
 }
 
-interface QueryBuilder {
-  [QueryBuilderSym]: boolean;
+interface Statement {
   text: string;
   values: Value[];
   exec: () => Promise<QueryResult>;
   paginate: (page?: number, per?: number) => Promise<unknown[]>;
-  nest: () => QueryBuilder;
-  nestFirst: () => QueryBuilder;
+  nest: () => Statement;
+  nestFirst: () => Statement;
   all: <T>() => Promise<T[]>;
   first: <T>() => Promise<T | undefined>;
   compile: () => string;
@@ -72,12 +71,11 @@ function makeSql(
   const sanitizeIdentifier = (key: string) =>
     escapeIdentifier(transformKey(key, caseMethodToDb));
 
-  function QueryBuilder(
-    state: QueryBuilderState,
+  function Statement(
+    state: StatementState,
     queryClient: AcceptableClient = client
-  ): QueryBuilder {
+  ): Statement {
     const builder = Object.assign({}, state, {
-      [QueryBuilderSym]: true,
       toNative() {
         const segments = state.text.split(/\?/i);
         const text = segments
@@ -139,27 +137,29 @@ function makeSql(
       },
     });
 
+    statementWeakSet.add(builder);
+
     return builder;
   }
 
   function unboundSql(
     strings: TemplateStringsArray,
     ...values: InterpolatedValue[]
-  ): QueryBuilder {
-    let state: QueryBuilderState = {
+  ): Statement {
+    let state: StatementState = {
       text: "",
       values: [],
     };
 
-    const toQueryBuilder = (value: InterpolatedValue) => {
-      if (isQueryBuilder(value)) {
+    const toStatement = (value: InterpolatedValue) => {
+      if (isStatement(value)) {
         return value;
       } else {
-        const queryBuilder = QueryBuilder({
+        const statement = Statement({
           text: "?",
           values: [value],
         });
-        return queryBuilder;
+        return statement;
       }
     };
 
@@ -178,9 +178,9 @@ function makeSql(
         throw new Error("undefined cannot be interpolated");
 
       if (typeof arg !== "object" || arg === null || arg instanceof Date)
-        arg = toQueryBuilder(arg);
+        arg = toStatement(arg);
 
-      if (isQueryBuilder(arg)) {
+      if (isStatement(arg)) {
         state.text += arg.text;
         state.values.push(...arg.values);
       }
@@ -190,9 +190,9 @@ function makeSql(
         const list = arg as Value[];
         state.text += list
           .map((item) => {
-            const queryBuilder = toQueryBuilder(item);
-            state.values.push(...queryBuilder.values);
-            return queryBuilder.text;
+            const statement = toStatement(item);
+            state.values.push(...statement.values);
+            return statement.text;
           })
           .join(",");
       }
@@ -234,7 +234,7 @@ function makeSql(
               .map((obj) => {
                 let text = "(";
                 const values = Object.values(obj).map((value) =>
-                  toQueryBuilder(value)
+                  toStatement(value)
                 );
 
                 text += values
@@ -256,7 +256,7 @@ function makeSql(
           const obj = Object.fromEntries(
             Object.entries(arg).map(([key, value]) => [
               sanitizeIdentifier(key),
-              toQueryBuilder(value),
+              toStatement(value),
             ])
           );
 
@@ -302,14 +302,15 @@ function makeSql(
       }
     }
 
-    return QueryBuilder(state);
+    return Statement(state);
   }
 
   let txId = 0;
-  async function transaction(caller: (trxSql: Sql) => Promise<any>) {
+  async function transaction<T>(caller: (trxSql: Sql) => Promise<T>) {
     const isTopLevel = options.depth === 0;
-    const trxClient = isTopLevel
-      ? (((await client.connect()) as unknown) as PoolClient)
+    const createNewConnection = isTopLevel && !(client instanceof Client);
+    const trxClient = createNewConnection
+      ? ((await client.connect()) as PoolClient)
       : client;
 
     txId++;
@@ -339,11 +340,11 @@ function makeSql(
       trxClient.query(rollbackStmt);
       throw e;
     } finally {
-      if (isTopLevel) await (trxClient as PoolClient).release();
+      if (createNewConnection) (trxClient as PoolClient).release();
     }
   }
 
-  async function connection(caller: (sql: Sql) => Promise<any>) {
+  async function connection<T>(caller: (sql: Sql) => Promise<T>) {
     const isTopLevel = options.depth === 0;
     const createNewConnection = isTopLevel && !(client instanceof Client);
     const connectionClient = createNewConnection
@@ -367,11 +368,11 @@ function makeSql(
     transaction,
     connection,
     identifier: (identifier: string) =>
-      QueryBuilder({ text: escapeIdentifier(identifier), values: [] }),
-    literal: (value: any) => QueryBuilder({ text: "?", values: [value] }),
+      Statement({ text: escapeIdentifier(identifier), values: [] }),
+    literal: (value: any) => Statement({ text: "?", values: [value] }),
   });
-
-  type Sql = typeof sql;
 
   return sql;
 }
+
+type Sql = ReturnType<typeof connect>;
