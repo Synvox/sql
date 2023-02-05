@@ -15,26 +15,24 @@ export function isQueryBuilder(anything: any): anything is QueryBuilder {
   return anything && anything[QueryBuilderSym] === true;
 }
 
-type Primitive = string | number | boolean | Date | null;
+type Value = any;
 
-type Arg =
-  | Primitive
-  | Primitive[]
-  | Record<string, Primitive>
-  | Record<string, Primitive>[]
-  | KeyValuePrimitive
-  | QueryBuilderState
-  | undefined;
+type InterpolatedValue =
+  | Value
+  | (Value | QueryBuilderState)[]
+  | Record<string, Value | QueryBuilderState>
+  | Record<string, Value | QueryBuilderState>[]
+  | QueryBuilderState;
 
 interface QueryBuilderState {
   text: string;
-  values: Primitive[];
+  values: Value[];
 }
 
 interface QueryBuilder {
   [QueryBuilderSym]: boolean;
   text: string;
-  values: Primitive[];
+  values: Value[];
   exec: () => Promise<QueryResult>;
   paginate: (page?: number, per?: number) => Promise<unknown[]>;
   nest: () => QueryBuilder;
@@ -43,10 +41,6 @@ interface QueryBuilder {
   first: <T>() => Promise<T | undefined>;
   compile: () => string;
 }
-
-type KeyValuePrimitive = {
-  [id: string]: Primitive;
-};
 
 type Options = {
   caseMethod: "snake" | "camel" | "constant" | "pascal" | "none";
@@ -150,11 +144,23 @@ function makeSql(
 
   function unboundSql(
     strings: TemplateStringsArray,
-    ...values: Arg[]
+    ...values: InterpolatedValue[]
   ): QueryBuilder {
     let state: QueryBuilderState = {
       text: "",
       values: [],
+    };
+
+    const toQueryBuilder = (value: InterpolatedValue) => {
+      if (isQueryBuilder(value)) {
+        return value;
+      } else {
+        const queryBuilder = QueryBuilder({
+          text: "?",
+          values: [value],
+        });
+        return queryBuilder;
+      }
     };
 
     for (let index = 0; index < strings.length; index++) {
@@ -166,31 +172,29 @@ function makeSql(
         continue;
       }
 
-      const value = values[index];
-      if (value === undefined) {
-      }
+      let arg = values[index];
 
-      // primitive values
-      else if (
-        typeof value !== "object" ||
-        value === null ||
-        value instanceof Date
-      ) {
-        state.values.push(value);
-        state.text += `?`;
-      }
+      if (arg === undefined)
+        throw new Error("undefined cannot be interpolated");
 
-      // sub queries
-      else if (isQueryBuilder(value)) {
-        state.text += value.text;
-        state.values.push(...value.values);
+      if (typeof arg !== "object" || arg === null || arg instanceof Date)
+        arg = toQueryBuilder(arg);
+
+      if (isQueryBuilder(arg)) {
+        state.text += arg.text;
+        state.values.push(...arg.values);
       }
 
       // arrays
-      else if (Array.isArray(value) && typeof value[0] !== "object") {
-        const list = value as Primitive[];
-        state.text += list.map(() => `?`).join(", ");
-        state.values.push(...list);
+      else if (Array.isArray(arg) && typeof arg[0] !== "object") {
+        const list = arg as Value[];
+        state.text += list
+          .map((item) => {
+            const queryBuilder = toQueryBuilder(item);
+            state.values.push(...queryBuilder.values);
+            return queryBuilder.text;
+          })
+          .join(",");
       }
 
       // special query type interpolations
@@ -214,12 +218,12 @@ function makeSql(
 
         // arrays of objects
         if (
-          Array.isArray(value) &&
-          typeof value[0] === "object" &&
-          value[0] !== null
+          Array.isArray(arg) &&
+          typeof arg[0] === "object" &&
+          arg[0] !== null
         ) {
           if (isInsert) {
-            const arr = value as Record<string, Primitive>[];
+            const arr = arg as Record<string, Value>[];
             // (key1, key2) values (value1, value2)
             state.text += "(";
             state.text += Object.keys(arr[0])
@@ -229,10 +233,17 @@ function makeSql(
             state.text += arr
               .map((obj) => {
                 let text = "(";
-                text += Object.keys(obj)
-                  .map(() => "?")
-                  .join(", ");
-                state.values.push(...Object.values(obj));
+                const values = Object.values(obj).map((value) =>
+                  toQueryBuilder(value)
+                );
+
+                text += values
+                  .map((v) => {
+                    state.values.push(...v.values);
+                    return v.text;
+                  })
+                  .join(",");
+
                 text += ")";
                 return text;
               })
@@ -241,27 +252,32 @@ function makeSql(
         }
 
         // objects
-        else if (typeof value === "object" && value !== null) {
-          let obj = value as Record<string, Primitive>;
+        else if (typeof arg === "object" && arg !== null) {
+          const obj = Object.fromEntries(
+            Object.entries(arg).map(([key, value]) => [
+              sanitizeIdentifier(key),
+              toQueryBuilder(value),
+            ])
+          );
 
           if (isInsert) {
             // (key1, key2) values (value1, value2)
             state.text += "(";
-            state.text += Object.keys(obj)
-              .map((key) => sanitizeIdentifier(key))
-              .join(", ");
+            state.text += Object.keys(obj).join(", ");
             state.text += ") values (";
-            state.text += Object.keys(obj)
-              .map(() => "?")
+            state.text += Object.entries(obj)
+              .map(([_, val]) => {
+                state.values.push(...val.values);
+                return val.text;
+              })
               .join(", ");
-            state.values.push(...Object.values(obj));
             state.text += ")";
           } else if (isUpdate) {
             // key1 = value1, key2 = value2
             state.text += Object.entries(obj)
-              .map(([k, v]) => {
-                state.values.push(v);
-                return `${sanitizeIdentifier(k)} = ?`;
+              .map(([key, val]) => {
+                state.values.push(...val.values);
+                return `${key} = ${val.text}`;
               })
               .join(", ");
           } else if (isWhere) {
@@ -270,11 +286,14 @@ function makeSql(
             if (Object.keys(obj).length === 0) state.text += "true";
             else
               state.text += Object.entries(obj)
-                .map(([k, v]) => {
-                  if (v !== null) state.values.push(v);
-                  return v === null
-                    ? `${sanitizeIdentifier(k)} is null`
-                    : `${sanitizeIdentifier(k)} = ?`;
+                .map(([key, value]) => {
+                  const isNull =
+                    value.values[0] === null && value.values.length === 1;
+                  if (isNull) return `${key} is null`;
+                  else {
+                    state.values.push(...value.values);
+                    return `${key} = ${value.text}`;
+                  }
                 })
                 .join(" and ");
             state.text += ")";
@@ -347,7 +366,9 @@ function makeSql(
   const sql = Object.assign(unboundSql, {
     transaction,
     connection,
-    raw: (text: string) => QueryBuilder({ text, values: [] }),
+    identifier: (identifier: string) =>
+      QueryBuilder({ text: escapeIdentifier(identifier), values: [] }),
+    literal: (value: any) => QueryBuilder({ text: "?", values: [value] }),
   });
 
   type Sql = typeof sql;
