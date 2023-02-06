@@ -37,7 +37,7 @@ await sql`
 `.exec();
 ```
 
-**`all`** for getting the rows returned form a query.
+**`all`** for getting the rows returned from a query.
 
 ```ts
 const users = await sql`
@@ -45,7 +45,7 @@ const users = await sql`
 `.all<User>();
 ```
 
-**`first`** for getting the first row returned form a query.
+**`first`** for getting the first row returned from a query.
 
 ```ts
 const user = await sql`
@@ -53,7 +53,7 @@ const user = await sql`
 `.first<User>();
 ```
 
-**`paginate`** for getting the rows returned form a query.
+**`paginate`** for getting the rows returned from a query.
 
 ```ts
 const users = await sql`
