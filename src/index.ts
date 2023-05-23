@@ -10,9 +10,24 @@ const debugTransaction = Debug("sql:transaction");
 const debugError = Debug("sql:error");
 
 const statementWeakSet = new WeakSet<Statement>();
+const dependencyWeakSet = new WeakSet<Dependency>();
 
 export function isStatement(anything: any): anything is Statement {
   return anything && statementWeakSet.has(anything);
+}
+
+export function isDependency(anything: any): anything is Dependency {
+  return anything && dependencyWeakSet.has(anything);
+}
+
+export function dependency<Name extends string>(
+  name: Name,
+  statement: Statement,
+  options: { mode?: "materialized" | "not materialized" } = {}
+) {
+  const dep = { name, statement, options };
+  dependencyWeakSet.add(dep);
+  return dep;
 }
 
 type Value = any;
@@ -27,19 +42,21 @@ type InterpolatedValue =
 interface StatementState {
   text: string;
   values: Value[];
+  dependents: Dependency[];
 }
 
-interface Statement {
-  text: string;
-  values: Value[];
+interface Statement extends StatementState {
+  toNative: () => { text: string; values: Value[] };
   exec: () => Promise<QueryResult>;
   paginate: (page?: number, per?: number) => Promise<unknown[]>;
-  nest: () => Statement;
+  nestAll: () => Statement;
   nestFirst: () => Statement;
   all: <T>() => Promise<T[]>;
   first: <T>() => Promise<T | undefined>;
   compile: () => string;
 }
+
+type Dependency = ReturnType<typeof dependency>;
 
 type Options = {
   caseMethod: "snake" | "camel" | "constant" | "pascal" | "none";
@@ -77,8 +94,40 @@ function makeSql(
   ): Statement {
     const builder = Object.assign({}, state, {
       toNative() {
-        const segments = state.text.split(/\?/i);
-        const text = segments
+        let values: any[] = [];
+
+        let text = state.text;
+        if (Object.keys(state.dependents).length) {
+          let dependents: Dependency[] = [];
+
+          let walk = (dep: Dependency) => {
+            const preexisting = dependents.find((v) => v.name === dep.name);
+            if (!preexisting) {
+              dependents.push(dep);
+            } else if (preexisting.statement.text !== dep.statement.text) {
+              throw new Error(`Conflicting dependency name: ${dep.name}`);
+            }
+
+            dep.statement.dependents.forEach(walk);
+          };
+          state.dependents.forEach(walk);
+
+          text = `with ${dependents
+            .map((dependency) => {
+              const { mode } = dependency.options;
+              const { text, values: v } = dependency.statement;
+              const key = dependency.name;
+              const pragma = mode ? `${mode} ` : "";
+              values.push(...v);
+
+              return `${key} as ${pragma}(${text})`;
+            })
+            .join(", ")} (${state.text})`;
+        }
+
+        values.push(...state.values);
+        const segments = text.split(/\?/i);
+        text = segments
           .map((segment, index) => {
             if (index + 1 === segments.length) return segment;
             return `${segment}$${index + 1}`;
@@ -89,7 +138,7 @@ function makeSql(
 
         return {
           text,
-          values: state.values,
+          values,
         };
       },
       async exec() {
@@ -108,14 +157,17 @@ function makeSql(
       async paginate(page: number = 0, per: number = 250) {
         page = Math.max(0, page);
 
+        const dep: Dependency = dependency("paginated", builder, {
+          mode: "not materialized",
+        });
+
         const paginated = sql`
-          with stmt as not materialized (${builder}) select * from stmt limit ${per} offset ${page *
-          per}
+          select paginated.* from ${dep} limit ${per} offset ${page * per}
         `;
 
         return paginated.all();
       },
-      nest() {
+      nestAll() {
         return sql`coalesce((select jsonb_agg(subquery) as nested from (${builder}) subquery), '[]'::jsonb)`;
       },
       nestFirst() {
@@ -130,9 +182,9 @@ function makeSql(
         return result[0];
       },
       compile() {
-        const args = state.values;
-        return state.text.replace(/\?/g, () =>
-          escapeLiteral(String(args.shift()))
+        const { text, values } = this.toNative();
+        return text.replace(/\$\d/g, () =>
+          escapeLiteral(String(values.shift()))
         );
       },
     });
@@ -149,6 +201,7 @@ function makeSql(
     let state: StatementState = {
       text: "",
       values: [],
+      dependents: [],
     };
 
     const toStatement = (value: InterpolatedValue) => {
@@ -158,6 +211,7 @@ function makeSql(
         const statement = Statement({
           text: "?",
           values: [value],
+          dependents: [],
         });
         return statement;
       }
@@ -183,6 +237,18 @@ function makeSql(
       if (isStatement(arg)) {
         state.text += arg.text;
         state.values.push(...arg.values);
+        for (let dep of arg.dependents) {
+          state.dependents.push(dep);
+        }
+      }
+
+      // dependencies
+      else if (isDependency(arg)) {
+        for (let dep of arg.statement.dependents) {
+          state.dependents.push(dep);
+        }
+        state.dependents.push(arg);
+        state.text += arg.name;
       }
 
       // arrays
@@ -367,9 +433,14 @@ function makeSql(
   const sql = Object.assign(unboundSql, {
     transaction,
     connection,
-    identifier: (identifier: string) =>
-      Statement({ text: escapeIdentifier(identifier), values: [] }),
-    literal: (value: any) => Statement({ text: "?", values: [value] }),
+    ref: (identifier: string) =>
+      Statement({
+        text: escapeIdentifier(identifier),
+        values: [],
+        dependents: [],
+      }),
+    literal: (value: any) =>
+      Statement({ text: "?", values: [value], dependents: [] }),
   });
 
   return sql;

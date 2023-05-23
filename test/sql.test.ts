@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { connect } from "../src";
+import { connect, dependency } from "../src";
 
 const client = new Pool();
 const sql = connect(client);
@@ -24,8 +24,7 @@ describe("substitutions", () => {
     expect(
       sql`select * from users where id in (${sql`select id from comments where id=${1}`})`
     ).toMatchObject({
-      text:
-        "select * from users where id in (select id from comments where id=?)",
+      text: "select * from users where id in (select id from comments where id=?)",
       values: [1],
     });
   });
@@ -41,8 +40,37 @@ describe("substitutions", () => {
     });
   });
 
+  it("supports dependencies", async () => {
+    async function users() {
+      return dependency("users", sql`select * from users where id = ${"abc"}`);
+    }
+
+    async function posts() {
+      return dependency("posts", sql`select * from posts`, {
+        mode: "materialized",
+      });
+    }
+
+    expect(
+      sql`
+        select *
+        from ${await users()}
+        where id = 1
+        and where exists (
+          select *
+          from ${await posts()}
+          where users.id = posts.user_id
+        )
+        limit ${1}
+      `.toNative()
+    ).toMatchObject({
+      text: "with users as (select * from users where id = $1), posts as materialized (select * from posts) ( select * from users where id = 1 and where exists ( select * from posts where users.id = posts.user_id ) limit $2 )",
+      values: ["abc", 1],
+    });
+  });
+
   it("supports raw substitutions", () => {
-    expect(sql`select ${sql.identifier("column")} from users`).toMatchObject({
+    expect(sql`select ${sql.ref("column")} from users`).toMatchObject({
       text: `select "column" from users`,
       values: [],
     });
@@ -378,7 +406,7 @@ describe("connects to postgres", () => {
             `.nestFirst()} as post
           from test.post_likes
           where post_likes.user_id = users.id
-        `.nest()} as liked_posts
+        `.nestAll()} as liked_posts
       from test.users
       where users.id = ${user.id}
     `.first();
@@ -407,6 +435,228 @@ describe("connects to postgres", () => {
           },
         ],
         "name": "Ryan",
+      }
+    `);
+  });
+
+  it("supports nesting with dependencies", async () => {
+    await sql`
+      create table test.users (
+        id serial primary key,
+        name text not null
+      );
+    `.exec();
+
+    await sql`
+      create table test.posts (
+        id serial primary key,
+        name text not null
+      );
+    `.exec();
+
+    await sql`
+      create table test.post_likes (
+        id serial primary key,
+        user_id int not null references test.users(id) on delete cascade,
+        post_id int not null references test.posts(id) on delete cascade
+      );
+    `.exec();
+
+    const user = (await sql`insert into test.users ${{
+      name: "Ryan",
+    }} returning *`.first<{ id: number; name: string }>())!;
+
+    const post1 = (await sql`insert into test.posts ${{
+      name: "My Post",
+    }} returning *`.first<{ id: number; name: string }>())!;
+    await sql`insert into test.post_likes ${{
+      userId: user.id,
+      postId: post1.id,
+    }} returning *`.first();
+
+    const post2 = (await sql`insert into test.posts ${{
+      name: "My Post",
+    }} returning *`.first<{ id: number; name: string }>())!;
+    await sql`insert into test.post_likes ${{
+      userId: user.id,
+      postId: post2.id,
+    }} returning *`.first();
+
+    async function users() {
+      return dependency(
+        "users",
+        sql`
+          select users.*
+          from test.users
+          where users.id = ${user.id}
+        `
+      );
+    }
+
+    async function postLikes() {
+      return dependency(
+        "post_likes",
+        sql`
+          select post_likes.* from test.post_likes
+          where post_likes.user_id = ${user.id}
+        `
+      );
+    }
+
+    async function posts() {
+      return dependency(
+        "posts",
+        sql`
+          select posts.* from test.posts
+          where exists (
+            select 1
+            from ${await postLikes()}
+            where post_likes.post_id = posts.id
+          )
+        `
+      );
+    }
+
+    const stmt = sql`
+      select
+        users.*,
+        ${sql`
+          select
+            post_likes.*,
+            ${sql`
+              select posts.*
+              from ${await posts()}
+              where posts.id = post_likes.post_id
+            `.nestFirst()} as post
+          from ${await postLikes()}
+          where post_likes.user_id = users.id
+        `.nestAll()} as post_likes
+      from ${await users()}
+      where users.id = ${user.id}
+    `;
+
+    expect(stmt.compile()).toMatchInlineSnapshot(
+      `"with post_likes as ( select post_likes.* from test.post_likes where post_likes.user_id = '1' ), posts as ( select posts.* from test.posts where exists ( select 1 from post_likes where post_likes.post_id = posts.id ) ), users as ( select users.* from test.users where users.id = '1' ) ( select users.*, coalesce((select jsonb_agg(subquery) as nested from ( select post_likes.*, (select row_to_json(subquery) as nested from ( select posts.* from posts where posts.id = post_likes.post_id ) subquery limit 1) as post from post_likes where post_likes.user_id = users.id ) subquery), '[]'::jsonb) as post_likes from users where users.id = '1' )"`
+    );
+    const result = await stmt.paginate();
+    expect(result).toMatchInlineSnapshot(`
+      Array [
+        Object {
+          "id": 1,
+          "name": "Ryan",
+          "postLikes": Array [
+            Object {
+              "id": 1,
+              "post": Object {
+                "id": 1,
+                "name": "My Post",
+              },
+              "postId": 1,
+              "userId": 1,
+            },
+            Object {
+              "id": 2,
+              "post": Object {
+                "id": 2,
+                "name": "My Post",
+              },
+              "postId": 2,
+              "userId": 1,
+            },
+          ],
+        },
+      ]
+    `);
+  });
+
+  it("supports dependencies", async () => {
+    await sql`
+      create table test.users (
+        id serial primary key,
+        name text not null
+      );
+    `.exec();
+
+    await sql`
+      create table test.posts (
+        id serial primary key,
+        name text not null
+      );
+    `.exec();
+
+    await sql`
+      create table test.post_likes (
+        id serial primary key,
+        user_id int not null references test.users(id) on delete cascade,
+        post_id int not null references test.posts(id) on delete cascade
+      );
+    `.exec();
+
+    type User = { id: number; name: string };
+    type Post = { id: number; name: string };
+    const user = (await sql`insert into test.users ${{
+      name: "Ryan",
+    }} returning *`.first<User>())!;
+
+    const post1 = (await sql`insert into test.posts ${{
+      name: "My Post",
+    }} returning *`.first<Post>())!;
+    await sql`insert into test.post_likes ${{
+      userId: user.id,
+      postId: post1.id,
+    }} returning *`.first();
+
+    const post2 = (await sql`insert into test.posts ${{
+      name: "My Post",
+    }} returning *`.first<Post>())!;
+    await sql`insert into test.post_likes ${{
+      userId: user.id,
+      postId: post2.id,
+    }} returning *`.first();
+
+    async function posts() {
+      // if this needed to come from somewhere
+      const u =
+        await sql`select * from test.users where id = ${user.id}`.first<User>();
+
+      return dependency(
+        "posts",
+        sql`
+        select *
+        from test.posts
+        where exists (
+          select *
+          from test.post_likes
+          where post_likes.post_id = posts.id
+          and user_id = ${u!.id}
+        )
+      `,
+        { mode: "not materialized" }
+      );
+    }
+
+    const stmt = sql`
+      select *
+      from ${await posts()}
+      where id = ${post1.id}
+    `;
+
+    const result = await stmt.first<Post>();
+
+    expect(result).toMatchInlineSnapshot(`
+      Object {
+        "id": 1,
+        "name": "My Post",
+      }
+    `);
+
+    expect(stmt.toNative()).toMatchInlineSnapshot(`
+      Object {
+        "text": "with posts as not materialized ( select * from test.posts where exists ( select * from test.post_likes where post_likes.post_id = posts.id and user_id = $1 ) ) ( select * from posts where id = $2 )",
+        "values": Array [
+          1,
+          1,
+        ],
       }
     `);
   });

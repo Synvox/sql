@@ -155,7 +155,7 @@ await sql`
 
 ## Nested Resources
 
-Eager load related data using `nest` and `nestFirst` helpers:
+Eager load related data using `nestAll` and `nestFirst` helpers:
 
 ```ts
 await sql`
@@ -172,10 +172,79 @@ await sql`
         `.nestFirst()} as post
       from test.post_likes
       where post_likes.user_id = users.id
-    `.nest()} as liked_posts
+    `.nestAll()} as liked_posts
   from test.users
   where users.id = ${user.id}
 `.first();
+```
+
+## Dependencies and Policies
+
+If you would like to access a table but through a policy, you may use a dependency:
+
+```ts
+async function users(ctx) {
+  const team = await getTeam(ctx);
+  return dependency(
+    "users",
+    sql`
+      select *
+      from users
+      where team_id = ${team.id}
+      and deleted_at is null
+    `,
+    { mode: "not materialized" }
+  );
+}
+
+async function projects(ctx) {
+  const team = await getTeam(ctx);
+  return dependency(
+    "projects",
+    sql`
+      select *
+      from projects
+      where team_id = ${team.id}
+    `
+  );
+}
+
+const projects = await sql`
+  select
+    projects.*
+    ${sql`
+      select users.email
+      from ${await users(ctx)}
+      where projects.user_id = users.id
+    `} as contact_email
+  from ${await projects(ctx)}
+`;
+```
+
+Dependencies are transformed to common table expressions. This example would run:
+
+```sql
+with
+users as (
+  select *
+  from users
+  where team_id = $1
+  and deleted_at is null
+),
+projects as (
+  select *
+  from projects
+  where team_id = $2
+) (
+  select
+    projects.*,
+    (
+      select users.email
+      from users
+      where projects.user_id = users.id
+    ) as contact_email
+  from projects
+)
 ```
 
 ## Transactions
