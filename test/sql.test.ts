@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { connect, dependency } from "../src";
+import { connect, cte } from "../src";
 
 const client = new Pool();
 const sql = connect(client);
@@ -42,11 +42,11 @@ describe("substitutions", () => {
 
   it("supports dependencies", async () => {
     async function users() {
-      return dependency("users", sql`select * from users where id = ${"abc"}`);
+      return cte("users", sql`select * from users where id = ${"abc"}`);
     }
 
     async function posts() {
-      return dependency("posts", sql`select * from posts`, {
+      return cte("posts", sql`select * from posts`, {
         mode: "materialized",
       });
     }
@@ -469,21 +469,23 @@ describe("connects to postgres", () => {
     const post1 = (await sql`insert into test.posts ${{
       name: "My Post",
     }} returning *`.first<{ id: number; name: string }>())!;
+
     await sql`insert into test.post_likes ${{
       userId: user.id,
       postId: post1.id,
-    }} returning *`.first();
+    }}`.exec();
 
     const post2 = (await sql`insert into test.posts ${{
       name: "My Post",
     }} returning *`.first<{ id: number; name: string }>())!;
+
     await sql`insert into test.post_likes ${{
       userId: user.id,
       postId: post2.id,
-    }} returning *`.first();
+    }}`.exec();
 
     async function users() {
-      return dependency(
+      return cte(
         "users",
         sql`
           select users.*
@@ -494,7 +496,7 @@ describe("connects to postgres", () => {
     }
 
     async function postLikes() {
-      return dependency(
+      return cte(
         "post_likes",
         sql`
           select post_likes.* from test.post_likes
@@ -504,7 +506,7 @@ describe("connects to postgres", () => {
     }
 
     async function posts() {
-      return dependency(
+      return cte(
         "posts",
         sql`
           select posts.* from test.posts
@@ -619,7 +621,7 @@ describe("connects to postgres", () => {
       const u =
         await sql`select * from test.users where id = ${user.id}`.first<User>();
 
-      return dependency(
+      return cte(
         "posts",
         sql`
         select *

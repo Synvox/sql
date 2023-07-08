@@ -10,23 +10,23 @@ const debugTransaction = Debug("sql:transaction");
 const debugError = Debug("sql:error");
 
 const statementWeakSet = new WeakSet<Statement>();
-const dependencyWeakSet = new WeakSet<Dependency>();
+const cteWeakSet = new WeakSet<CTE>();
 
 export function isStatement(anything: any): anything is Statement {
   return anything && statementWeakSet.has(anything);
 }
 
-export function isDependency(anything: any): anything is Dependency {
-  return anything && dependencyWeakSet.has(anything);
+export function isCTE(anything: any): anything is CTE {
+  return anything && cteWeakSet.has(anything);
 }
 
-export function dependency<Name extends string>(
+export function cte<Name extends string>(
   name: Name,
   statement: Statement,
   options: { mode?: "materialized" | "not materialized" } = {}
 ) {
   const dep = { name, statement, options };
-  dependencyWeakSet.add(dep);
+  cteWeakSet.add(dep);
   return dep;
 }
 
@@ -42,7 +42,7 @@ type InterpolatedValue =
 interface StatementState {
   text: string;
   values: Value[];
-  dependents: Dependency[];
+  ctes: CTE[];
 }
 
 interface Statement extends StatementState {
@@ -56,7 +56,7 @@ interface Statement extends StatementState {
   compile: () => string;
 }
 
-type Dependency = ReturnType<typeof dependency>;
+type CTE = ReturnType<typeof cte>;
 
 type Options = {
   caseMethod: "snake" | "camel" | "constant" | "pascal" | "none";
@@ -97,26 +97,26 @@ function makeSql(
         let values: any[] = [];
 
         let text = state.text;
-        if (Object.keys(state.dependents).length) {
-          let dependents: Dependency[] = [];
+        if (Object.keys(state.ctes).length) {
+          let ctes: CTE[] = [];
 
-          let walk = (dep: Dependency) => {
-            const preexisting = dependents.find((v) => v.name === dep.name);
+          let walk = (dep: CTE) => {
+            const preexisting = ctes.find((v) => v.name === dep.name);
             if (!preexisting) {
-              dependents.push(dep);
+              ctes.push(dep);
             } else if (preexisting.statement.text !== dep.statement.text) {
-              throw new Error(`Conflicting dependency name: ${dep.name}`);
+              throw new Error(`Conflicting cte name: ${dep.name}`);
             }
 
-            dep.statement.dependents.forEach(walk);
+            dep.statement.ctes.forEach(walk);
           };
-          state.dependents.forEach(walk);
+          state.ctes.forEach(walk);
 
-          text = `with ${dependents
-            .map((dependency) => {
-              const { mode } = dependency.options;
-              const { text, values: v } = dependency.statement;
-              const key = dependency.name;
+          text = `with ${ctes
+            .map((cte) => {
+              const { mode } = cte.options;
+              const { text, values: v } = cte.statement;
+              const key = cte.name;
               const pragma = mode ? `${mode} ` : "";
               values.push(...v);
 
@@ -157,7 +157,7 @@ function makeSql(
       async paginate(page: number = 0, per: number = 250) {
         page = Math.max(0, page);
 
-        const dep: Dependency = dependency("paginated", builder, {
+        const dep: CTE = cte("paginated", builder, {
           mode: "not materialized",
         });
 
@@ -201,7 +201,7 @@ function makeSql(
     let state: StatementState = {
       text: "",
       values: [],
-      dependents: [],
+      ctes: [],
     };
 
     const toStatement = (value: InterpolatedValue) => {
@@ -211,7 +211,7 @@ function makeSql(
         const statement = Statement({
           text: "?",
           values: [value],
-          dependents: [],
+          ctes: [],
         });
         return statement;
       }
@@ -237,17 +237,17 @@ function makeSql(
       if (isStatement(arg)) {
         state.text += arg.text;
         state.values.push(...arg.values);
-        for (let dep of arg.dependents) {
-          state.dependents.push(dep);
+        for (let dep of arg.ctes) {
+          state.ctes.push(dep);
         }
       }
 
-      // dependencies
-      else if (isDependency(arg)) {
-        for (let dep of arg.statement.dependents) {
-          state.dependents.push(dep);
+      // CTEs
+      else if (isCTE(arg)) {
+        for (let dep of arg.statement.ctes) {
+          state.ctes.push(dep);
         }
-        state.dependents.push(arg);
+        state.ctes.push(arg);
         state.text += arg.name;
       }
 
@@ -437,10 +437,10 @@ function makeSql(
       Statement({
         text: escapeIdentifier(identifier),
         values: [],
-        dependents: [],
+        ctes: [],
       }),
     literal: (value: any) =>
-      Statement({ text: "?", values: [value], dependents: [] }),
+      Statement({ text: "?", values: [value], ctes: [] }),
   });
 
   return sql;
