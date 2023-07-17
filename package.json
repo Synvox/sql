@@ -35,5 +35,8 @@
   "dependencies": {
     "debug": "*",
     "pg": "*"
+  },
+  "engines": {
+    "node": ">=12"
   }
 }
