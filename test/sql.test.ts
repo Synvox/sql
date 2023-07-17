@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { number, object, string } from "zod";
 import { connect, cte } from "../src";
 
 const client = new Pool();
@@ -303,6 +304,83 @@ describe("connects to postgres", () => {
     );
   });
 
+  it("supports first with zod schema", async () => {
+    await sql`
+      create table test.users (
+        id serial primary key,
+        first_name text not null,
+        last_name text not null
+      );
+    `.exec();
+
+    await sql`
+      insert into test.users ${{
+        firstName: "Ryan",
+        lastName: "Allred",
+      }}
+    `.exec();
+
+    const UserSchema = object({
+      id: number(),
+      firstName: string(),
+      lastName: string(),
+    });
+
+    const result = await sql`select * from test.users`.first(UserSchema);
+
+    expect(result).toEqual({ id: 1, firstName: "Ryan", lastName: "Allred" });
+
+    expect(
+      await sql`select * from test.users where id=${123}`.first(
+        UserSchema.optional()
+      )
+    ).toEqual(undefined);
+
+    // rejects because the row was not found
+    await expect(
+      sql`select * from test.users where id=${123}`.first(UserSchema)
+    ).rejects.toThrow();
+  });
+
+  it("supports all with zod schema", async () => {
+    await sql`
+      create table test.users (
+        id serial primary key,
+        first_name text not null,
+        last_name text not null
+      );
+    `.exec();
+
+    await sql`
+      insert into test.users ${{
+        firstName: "Ryan",
+        lastName: "Allred",
+      }}
+    `.exec();
+
+    const UserSchema = object({
+      id: number(),
+      firstName: string(),
+      lastName: string(),
+    });
+
+    const result = await sql`select * from test.users`.all(UserSchema);
+
+    expect(result).toEqual([{ id: 1, firstName: "Ryan", lastName: "Allred" }]);
+
+    expect(
+      await sql`select * from test.users where id=${123}`.all(UserSchema)
+    ).toEqual([]);
+
+    await expect(
+      sql`select * from test.users where`.all(
+        object({
+          id: string(),
+        })
+      )
+    ).rejects.toThrow();
+  });
+
   it("supports inserting objects", async () => {
     await sql`
       create table test.logs (
@@ -341,12 +419,102 @@ describe("connects to postgres", () => {
     expect(result).toEqual([{ data: ["thing1", "thing2"], id: 1 }]);
   });
 
+  it("supports special types (Date, Buffer)", async () => {
+    await sql`
+      create table test.logs (
+        id serial primary key,
+        date timestamp with time zone not null,
+        data bytea
+      );
+    `.exec();
+
+    await sql`
+      insert into test.logs ${{
+        date: new Date("2020-01-01T00:00:00.000Z"),
+        data: Buffer.from("hello"),
+      }}
+    `.exec();
+
+    const result = await sql`select * from test.logs`.first();
+
+    expect(result).toMatchObject({
+      date: new Date("2020-01-01T00:00:00.000Z"),
+      data: Buffer.from("hello"),
+    });
+  });
+
   it("supports establishing a connection without a transaction", async () => {
     expect(
       await sql.connection((sql) => sql`select 1+1 as two`.first())
     ).toEqual({
       two: 2,
     });
+  });
+
+  it("supports multiple lines", async () => {
+    await sql`
+      create table test.logs (
+        id serial primary key,
+        body text
+      );
+    `.exec();
+
+    await sql`
+      begin;
+        insert into test.logs (body) values ('hello1');
+        insert into test.logs (body) values ('hello2');
+        select *
+        into temp logs2
+        from test.logs;
+        delete from test.logs where body='hello1';
+        insert into test.logs(body) select string_agg(logs2.body, ', ') from logs2;
+      commit;
+    `.exec();
+
+    const rows = await sql`select * from test.logs`.all();
+
+    expect(rows).toMatchInlineSnapshot(`
+      Array [
+        Object {
+          "body": "hello2",
+          "id": 2,
+        },
+        Object {
+          "body": "hello1, hello2",
+          "id": 3,
+        },
+      ]
+    `);
+
+    const stmt = sql`
+      select * from test.logs where id=${2};
+      select * from test.logs where id=${3};
+    `;
+
+    expect(stmt.compile()).toMatchInlineSnapshot(
+      `"select * from test.logs where id='2'; select * from test.logs where id='3';"`
+    );
+
+    const results = await stmt.execRaw({
+      areYouSureYouKnowWhatYouAreDoing: true,
+    });
+
+    expect((results as any).map((r: any) => r.rows)).toMatchInlineSnapshot(`
+      Array [
+        Array [
+          Object {
+            "body": "hello2",
+            "id": 2,
+          },
+        ],
+        Array [
+          Object {
+            "body": "hello1, hello2",
+            "id": 3,
+          },
+        ],
+      ]
+    `);
   });
 
   it("supports nesting", async () => {

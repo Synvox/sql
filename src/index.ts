@@ -1,6 +1,8 @@
 import Debug from "debug";
-import { Client, Pool, PoolClient, QueryResult } from "pg";
+import type { Pool, PoolClient, QueryResult } from "pg";
+import { Client } from "pg";
 import { caseMethods, transformKey, transformKeys } from "./case";
+import { ZodSchema, array } from "zod";
 
 const { escapeLiteral, escapeIdentifier } = Client.prototype;
 
@@ -48,11 +50,18 @@ interface StatementState {
 interface Statement extends StatementState {
   toNative: () => { text: string; values: Value[] };
   exec: () => Promise<QueryResult>;
-  paginate: (page?: number, per?: number) => Promise<unknown[]>;
+  execRaw: (opt: {
+    areYouSureYouKnowWhatYouAreDoing: true;
+  }) => Promise<QueryResult>;
   nestAll: () => Statement;
   nestFirst: () => Statement;
-  all: <T>() => Promise<T[]>;
-  first: <T>() => Promise<T | undefined>;
+  paginate: <T>(options?: {
+    page?: number;
+    per?: number;
+    schema?: ZodSchema<T>;
+  }) => Promise<T[]>;
+  all: <T>(schema?: ZodSchema<T>) => Promise<T[]>;
+  first: <T>(schema?: ZodSchema<T>) => Promise<T>;
   compile: () => string;
 }
 
@@ -154,7 +163,48 @@ function makeSql(
           throw e;
         }
       },
-      async paginate(page: number = 0, per: number = 250) {
+      async execRaw({ areYouSureYouKnowWhatYouAreDoing = false } = {}) {
+        if (!areYouSureYouKnowWhatYouAreDoing)
+          throw new Error(
+            "You must pass {areYouSureYouKnowWhatYouAreDoing: true} to this function to execute it without parameters"
+          );
+
+        const text = this.compile();
+
+        debugQuery(text);
+        try {
+          const result = await queryClient.query({ text });
+          return result;
+        } catch (e) {
+          debugError("Query failed: ", text);
+          throw e;
+        }
+      },
+      nestAll() {
+        return sql`coalesce((select jsonb_agg(subquery) as nested from (${builder}) subquery), '[]'::jsonb)`;
+      },
+      nestFirst() {
+        return sql`(select row_to_json(subquery) as nested from (${builder}) subquery limit 1)`;
+      },
+      async all<T>(schema?: ZodSchema<T>) {
+        const result = await this.exec();
+        if (typeof result.rows === "undefined")
+          throw new Error('Multiple statements in query, use "exec" instead.');
+
+        const items = transformKeys(result.rows, caseMethodFromDb);
+
+        if (schema) return array(schema).parse(items);
+        return items as T[];
+      },
+      async paginate<T>({
+        page = 0,
+        per = 250,
+        schema,
+      }: {
+        page?: number;
+        per?: number;
+        schema?: ZodSchema<T>;
+      } = {}) {
         page = Math.max(0, page);
 
         const dep: CTE = cte("paginated", builder, {
@@ -165,21 +215,13 @@ function makeSql(
           select paginated.* from ${dep} limit ${per} offset ${page * per}
         `;
 
-        return paginated.all();
+        return paginated.all<T>(schema);
       },
-      nestAll() {
-        return sql`coalesce((select jsonb_agg(subquery) as nested from (${builder}) subquery), '[]'::jsonb)`;
-      },
-      nestFirst() {
-        return sql`(select row_to_json(subquery) as nested from (${builder}) subquery limit 1)`;
-      },
-      async all<T>() {
-        const result = await this.exec();
-        return transformKeys(result.rows, caseMethodFromDb) as T[];
-      },
-      async first<T>() {
+      async first<T>(schema?: ZodSchema<T>) {
         const result = await this.all<T>();
-        return result[0];
+        const item = result[0];
+        if (schema) return schema.parse(item);
+        return item as T;
       },
       compile() {
         const { text, values } = this.toNative();
