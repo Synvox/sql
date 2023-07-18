@@ -38,5 +38,8 @@
   },
   "engines": {
     "node": ">=12"
+  },
+  "np": {
+    "contents": "dist"
   }
 }
