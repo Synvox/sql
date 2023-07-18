@@ -77,6 +77,18 @@ describe("substitutions", () => {
     });
   });
 
+  it("supports joining statements", () => {
+    expect(
+      sql`select * from users where ${sql.join(sql`or`, [
+        sql`id = ${1}`,
+        sql`public = ${true}`,
+      ])}`
+    ).toMatchObject({
+      text: `select * from users where id = ? or public = ?`,
+      values: [1, true],
+    });
+  });
+
   it("supports arrays", () => {
     expect(sql`select * from users where id in (${[1, 2, 3]})`).toMatchObject({
       text: "select * from users where id in (?,?,?)",

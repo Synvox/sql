@@ -47,7 +47,7 @@ interface StatementState {
   ctes: CTE[];
 }
 
-interface Statement extends StatementState {
+export interface Statement extends StatementState {
   toNative: () => { text: string; values: Value[] };
   exec: () => Promise<QueryResult>;
   execRaw: (opt: {
@@ -481,6 +481,8 @@ function makeSql(
         values: [],
         ctes: [],
       }),
+    join: (delimiter: Statement, [first, ...statements]: Statement[]) =>
+      statements.reduce((acc, item) => sql`${acc} ${delimiter} ${item}`, first),
     literal: (value: any) =>
       Statement({ text: "?", values: [value], ctes: [] }),
   });
