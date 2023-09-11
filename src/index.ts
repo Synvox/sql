@@ -14,15 +14,15 @@ const debugError = Debug("sql:error");
 const statementWeakSet = new WeakSet<Statement>();
 const cteWeakSet = new WeakSet<CTE>();
 
-export function isStatement(anything: any): anything is Statement {
+function isStatement(anything: any): anything is Statement {
   return anything && statementWeakSet.has(anything);
 }
 
-export function isCTE(anything: any): anything is CTE {
+function isCTE(anything: any): anything is CTE {
   return anything && cteWeakSet.has(anything);
 }
 
-export function cte<Name extends string>(
+function cte<Name extends string>(
   name: Name,
   statement: Statement,
   options: { mode?: "materialized" | "not materialized" } = {}
@@ -47,7 +47,7 @@ interface StatementState {
   ctes: CTE[];
 }
 
-export interface Statement extends StatementState {
+interface Statement extends StatementState {
   toNative: () => { text: string; values: Value[] };
   exec: () => Promise<QueryResult>;
   execRaw: (opt: {
@@ -491,3 +491,5 @@ function makeSql(
 }
 
 type Sql = ReturnType<typeof connect>;
+
+export { isStatement, isCTE, Statement, cte, Sql };
