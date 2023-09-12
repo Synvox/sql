@@ -41,6 +41,15 @@ type InterpolatedValue =
   | Record<string, Value | StatementState>[]
   | StatementState;
 
+interface Sql {
+  (strings: TemplateStringsArray, ...values: InterpolatedValue[]): Statement;
+  transaction<T>(fn: (sql: Sql) => Promise<T>): Promise<T>;
+  connection<T>(fn: (sql: Sql) => Promise<T>): Promise<T>;
+  ref(identifier: string): Statement;
+  join(delimiter: Statement, statements: Statement[]): Statement;
+  literal(value: any): Statement;
+}
+
 interface StatementState {
   text: string;
   values: Value[];
@@ -472,7 +481,7 @@ function makeSql(
     }
   }
 
-  const sql = Object.assign(unboundSql, {
+  const sql: Sql = Object.assign(unboundSql, {
     transaction,
     connection,
     ref: (identifier: string) =>
@@ -489,7 +498,5 @@ function makeSql(
 
   return sql;
 }
-
-type Sql = ReturnType<typeof connect>;
 
 export { isStatement, isCTE, Statement, cte, Sql };
