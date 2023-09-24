@@ -1,6 +1,5 @@
 import { Pool } from "pg";
-import { connect, cte } from "../src";
-import { date, number, object, string } from "zod";
+import { connect } from "../src";
 
 const client = new Pool();
 const sql = connect(client);
@@ -67,15 +66,14 @@ it("supports this example", async () => {
 
   // users.ts
 
+  type User = {
+    id: number;
+    firstName: string;
+    lastName: string;
+  };
   (() => {
-    const UserSchema = object({
-      id: number(),
-      firstName: string(),
-      lastName: string(),
-    });
-
-    async function users() {
-      return cte("users", sql`select * from test_example.users`);
+    async function usersPolicy() {
+      return sql`select * from test_example.users`;
     }
 
     async function updateUser(
@@ -94,26 +92,22 @@ it("supports this example", async () => {
         set ${{ firstName, lastName }}
         where id = ${ctx.userId}
         returning *
-      `.first(UserSchema);
+      `.first<User>();
     }
 
-    return { UserSchema, updateUser, users };
+    return { updateUser, usersPolicy };
   })();
 
   // notes.ts
-  const { NoteSchema, notesCte, createNote } = (() => {
-    const NoteSchema = object({
-      id: number(),
-      body: string(),
-      authorId: number(),
-      createdAt: date(),
-    });
-
-    async function notesCte(ctx: Context) {
-      return cte(
-        "notes",
-        sql`select * from test_example.notes where author_id = ${ctx.userId}`
-      );
+  type Note = {
+    id: number;
+    body: string;
+    authorId: number;
+    createdAt: Date;
+  };
+  const { notesPolicy, createNote } = (() => {
+    async function notesPolicy(ctx: Context) {
+      return sql`select * from test_example.notes where author_id = ${ctx.userId}`;
     }
 
     async function updateNote(
@@ -128,7 +122,7 @@ it("supports this example", async () => {
         where author_id = ${ctx.userId}
         and id = ${where.id}
         returning *
-      `.first(NoteSchema);
+      `.first<Note>();
     }
 
     async function createNote(
@@ -140,7 +134,7 @@ it("supports this example", async () => {
         insert into test_example.notes
         ${{ body: insert.body, authorId: ctx.userId }}
         returning *
-      `.first(NoteSchema);
+      `.first<Note>();
     }
 
     async function deleteNote(sql: Sql, ctx: Context, where: { id: number }) {
@@ -149,19 +143,19 @@ it("supports this example", async () => {
         where author_id = ${ctx.userId}
         and id = ${where.id}
         returning *
-      `.first(NoteSchema);
+      `.first<Note>();
     }
 
     //@ts-expect-error
-    return { NoteSchema, notesCte, updateNote, createNote, deleteNote };
+    return { notesPolicy, updateNote, createNote, deleteNote };
   })();
 
   // index.ts
   await sql.transaction(async (sql) => {
     const noteRows = await sql`
       select *
-      from ${await notesCte(context)}
-    `.all(NoteSchema);
+      from (${await notesPolicy(context)}) notes
+    `.all();
 
     expect(noteRows).toMatchObject([
       {

@@ -1,6 +1,5 @@
 import { Pool } from "pg";
-import { number, object, string } from "zod";
-import { connect, cte } from "../src";
+import { connect } from "../src";
 
 const client = new Pool();
 const sql = connect(client);
@@ -43,29 +42,27 @@ describe("substitutions", () => {
 
   it("supports dependencies", async () => {
     async function users() {
-      return cte("users", sql`select * from users where id = ${"abc"}`);
+      return sql`select * from users where id = ${"abc"}`;
     }
 
     async function posts() {
-      return cte("posts", sql`select * from posts`, {
-        mode: "materialized",
-      });
+      return sql`select * from posts`;
     }
 
     expect(
       sql`
         select *
-        from ${await users()}
+        from (${await users()}) users
         where id = 1
         and where exists (
           select *
-          from ${await posts()}
+          from (${await posts()}) posts
           where users.id = posts.user_id
         )
         limit ${1}
       `.toNative()
     ).toMatchObject({
-      text: "with users as (select * from users where id = $1), posts as materialized (select * from posts) ( select * from users where id = 1 and where exists ( select * from posts where users.id = posts.user_id ) limit $2 )",
+      text: "select * from (select * from users where id = $1) users where id = 1 and where exists ( select * from (select * from posts) posts where users.id = posts.user_id ) limit $2",
       values: ["abc", 1],
     });
   });
@@ -266,6 +263,43 @@ describe("connects to postgres", () => {
     expect(result).toEqual([{ id: 1, firstName: "Ryan", lastName: "Allred" }]);
   });
 
+  it("handles failures", async () => {
+    await expect(
+      sql`limit from`.exec()
+    ).rejects.toThrowErrorMatchingInlineSnapshot(
+      `"syntax error at or near \\"limit\\""`
+    );
+
+    await expect(
+      sql`limit from`.execRaw({
+        areYouSureYouKnowWhatYouAreDoing: true,
+      })
+    ).rejects.toThrowErrorMatchingInlineSnapshot(
+      `"syntax error at or near \\"limit\\""`
+    );
+
+    await expect(
+      sql`limit from`.execRaw({
+        //@ts-expect-error
+        areYouSureYouKnowWhatYouAreDoing: false,
+      })
+    ).rejects.toThrowErrorMatchingInlineSnapshot(
+      `"You must pass {areYouSureYouKnowWhatYouAreDoing: true} to this function to execute it without parameters"`
+    );
+
+    await expect(
+      sql`select 2+2; select 4+4`.all()
+    ).rejects.toThrowErrorMatchingInlineSnapshot(
+      `"Multiple statements in query, use \\"exec\\" instead."`
+    );
+
+    expect(
+      () => sql`select ${undefined} + 2`
+    ).toThrowErrorMatchingInlineSnapshot(
+      `"cannot bind undefined value to query"`
+    );
+  });
+
   it("supports first", async () => {
     await sql`
       create table test.users (
@@ -316,83 +350,6 @@ describe("connects to postgres", () => {
     );
   });
 
-  it("supports first with zod schema", async () => {
-    await sql`
-      create table test.users (
-        id serial primary key,
-        first_name text not null,
-        last_name text not null
-      );
-    `.exec();
-
-    await sql`
-      insert into test.users ${{
-        firstName: "Ryan",
-        lastName: "Allred",
-      }}
-    `.exec();
-
-    const UserSchema = object({
-      id: number(),
-      firstName: string(),
-      lastName: string(),
-    });
-
-    const result = await sql`select * from test.users`.first(UserSchema);
-
-    expect(result).toEqual({ id: 1, firstName: "Ryan", lastName: "Allred" });
-
-    expect(
-      await sql`select * from test.users where id=${123}`.first(
-        UserSchema.optional()
-      )
-    ).toEqual(undefined);
-
-    // rejects because the row was not found
-    await expect(
-      sql`select * from test.users where id=${123}`.first(UserSchema)
-    ).rejects.toThrow();
-  });
-
-  it("supports all with zod schema", async () => {
-    await sql`
-      create table test.users (
-        id serial primary key,
-        first_name text not null,
-        last_name text not null
-      );
-    `.exec();
-
-    await sql`
-      insert into test.users ${{
-        firstName: "Ryan",
-        lastName: "Allred",
-      }}
-    `.exec();
-
-    const UserSchema = object({
-      id: number(),
-      firstName: string(),
-      lastName: string(),
-    });
-
-    const result = await sql`select * from test.users`.all(UserSchema);
-
-    expect(result).toEqual([{ id: 1, firstName: "Ryan", lastName: "Allred" }]);
-
-    expect(
-      await sql`select * from test.users where id=${123}`.all(UserSchema)
-    ).toEqual([]);
-
-    await expect(
-      sql`select * from test.users where`.all(
-        object({
-          id: string(),
-        })
-      )
-    ).rejects.toThrow();
-  });
-
   it("supports inserting objects", async () => {
     await sql`
       create table test.logs (
@@ -428,6 +385,38 @@ describe("connects to postgres", () => {
 
     const result = await sql`select * from test.logs`.all();
 
+    expect(result).toEqual([{ data: ["thing1", "thing2"], id: 1 }]);
+  });
+
+  it("supports inserting literals", async () => {
+    await sql`
+      create table test.logs (
+        id serial primary key,
+        data text[]
+      );
+    `.exec();
+
+    await sql`
+      insert into test.logs ${[
+        {
+          data: ["thing1", "thing2"],
+        },
+        {
+          data: ["thing3", "thing4"],
+        },
+      ]}
+    `.exec();
+
+    const stmt = sql`select * from test.logs where data = ${sql.literal([
+      "thing1",
+      "thing2",
+    ])}`;
+    const result = await stmt.all();
+
+    expect(stmt.toNative()).toMatchObject({
+      text: "select * from test.logs where data = $1",
+      values: [["thing1", "thing2"]],
+    });
     expect(result).toEqual([{ data: ["thing1", "thing2"], id: 1 }]);
   });
 
@@ -665,38 +654,29 @@ describe("connects to postgres", () => {
     }}`.exec();
 
     async function users() {
-      return cte(
-        "users",
-        sql`
-          select users.*
-          from test.users
-          where users.id = ${user.id}
-        `
-      );
+      return sql`
+        select users.*
+        from test.users
+        where users.id = ${user.id}
+      `;
     }
 
     async function postLikes() {
-      return cte(
-        "post_likes",
-        sql`
-          select post_likes.* from test.post_likes
-          where post_likes.user_id = ${user.id}
-        `
-      );
+      return sql`
+        select post_likes.* from test.post_likes
+        where post_likes.user_id = ${user.id}
+      `;
     }
 
     async function posts() {
-      return cte(
-        "posts",
-        sql`
-          select posts.* from test.posts
-          where exists (
-            select 1
-            from ${await postLikes()}
-            where post_likes.post_id = posts.id
-          )
-        `
-      );
+      return sql`
+        select posts.* from test.posts
+        where exists (
+          select 1
+          from (${await postLikes()}) post_likes
+          where post_likes.post_id = posts.id
+        )
+      `;
     }
 
     const stmt = sql`
@@ -707,18 +687,18 @@ describe("connects to postgres", () => {
             post_likes.*,
             ${sql`
               select posts.*
-              from ${await posts()}
+              from (${await posts()}) posts
               where posts.id = post_likes.post_id
             `.nestFirst()} as post
-          from ${await postLikes()}
+          from (${await postLikes()}) post_likes
           where post_likes.user_id = users.id
         `.nestAll()} as post_likes
-      from ${await users()}
+      from (${await users()}) users
       where users.id = ${user.id}
     `;
 
     expect(stmt.compile()).toMatchInlineSnapshot(
-      `"with post_likes as ( select post_likes.* from test.post_likes where post_likes.user_id = '1' ), posts as ( select posts.* from test.posts where exists ( select 1 from post_likes where post_likes.post_id = posts.id ) ), users as ( select users.* from test.users where users.id = '1' ) ( select users.*, coalesce((select jsonb_agg(subquery) as nested from ( select post_likes.*, (select row_to_json(subquery) as nested from ( select posts.* from posts where posts.id = post_likes.post_id ) subquery limit 1) as post from post_likes where post_likes.user_id = users.id ) subquery), '[]'::jsonb) as post_likes from users where users.id = '1' )"`
+      `"select users.*, coalesce((select jsonb_agg(subquery) as nested from ( select post_likes.*, (select row_to_json(subquery) as nested from ( select posts.* from ( select posts.* from test.posts where exists ( select 1 from ( select post_likes.* from test.post_likes where post_likes.user_id = '1' ) post_likes where post_likes.post_id = posts.id ) ) posts where posts.id = post_likes.post_id ) subquery limit 1) as post from ( select post_likes.* from test.post_likes where post_likes.user_id = '1' ) post_likes where post_likes.user_id = users.id ) subquery), '[]'::jsonb) as post_likes from ( select users.* from test.users where users.id = '1' ) users where users.id = '1'"`
     );
     const result = await stmt.paginate();
     expect(result).toMatchInlineSnapshot(`
@@ -801,9 +781,7 @@ describe("connects to postgres", () => {
       const u =
         await sql`select * from test.users where id = ${user.id}`.first<User>();
 
-      return cte(
-        "posts",
-        sql`
+      return sql`
         select *
         from test.posts
         where exists (
@@ -812,14 +790,12 @@ describe("connects to postgres", () => {
           where post_likes.post_id = posts.id
           and user_id = ${u!.id}
         )
-      `,
-        { mode: "not materialized" }
-      );
+      `;
     }
 
     const stmt = sql`
       select *
-      from ${await posts()}
+      from (${await posts()}) posts
       where id = ${post1.id}
     `;
 
@@ -834,7 +810,7 @@ describe("connects to postgres", () => {
 
     expect(stmt.toNative()).toMatchInlineSnapshot(`
       Object {
-        "text": "with posts as not materialized ( select * from test.posts where exists ( select * from test.post_likes where post_likes.post_id = posts.id and user_id = $1 ) ) ( select * from posts where id = $2 )",
+        "text": "select * from ( select * from test.posts where exists ( select * from test.post_likes where post_likes.post_id = posts.id and user_id = $1 ) ) posts where id = $2",
         "values": Array [
           1,
           1,

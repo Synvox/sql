@@ -2,7 +2,6 @@ import Debug from "debug";
 import type { Pool, PoolClient, QueryResult } from "pg";
 import { Client } from "pg";
 import { caseMethods, transformKey, transformKeys } from "./case";
-import { ZodSchema, array } from "zod";
 
 const { escapeLiteral, escapeIdentifier } = Client.prototype;
 
@@ -12,24 +11,9 @@ const debugTransaction = Debug("sql:transaction");
 const debugError = Debug("sql:error");
 
 const statementWeakSet = new WeakSet<Statement>();
-const cteWeakSet = new WeakSet<CTE>();
 
 function isStatement(anything: any): anything is Statement {
   return anything && statementWeakSet.has(anything);
-}
-
-function isCTE(anything: any): anything is CTE {
-  return anything && cteWeakSet.has(anything);
-}
-
-function cte<Name extends string>(
-  name: Name,
-  statement: Statement,
-  options: { mode?: "materialized" | "not materialized" } = {}
-) {
-  const dep = { name, statement, options };
-  cteWeakSet.add(dep);
-  return dep;
 }
 
 type Value = any;
@@ -53,7 +37,6 @@ interface Sql {
 interface StatementState {
   text: string;
   values: Value[];
-  ctes: CTE[];
 }
 
 interface Statement extends StatementState {
@@ -64,17 +47,11 @@ interface Statement extends StatementState {
   }) => Promise<QueryResult>;
   nestAll: () => Statement;
   nestFirst: () => Statement;
-  paginate: <T>(options?: {
-    page?: number;
-    per?: number;
-    schema?: ZodSchema<T>;
-  }) => Promise<T[]>;
-  all: <T>(schema?: ZodSchema<T>) => Promise<T[]>;
-  first: <T>(schema?: ZodSchema<T>) => Promise<T>;
+  paginate: <T>(options?: { page?: number; per?: number }) => Promise<T[]>;
+  all: <T>() => Promise<T[]>;
+  first: <T>() => Promise<T>;
   compile: () => string;
 }
-
-type CTE = ReturnType<typeof cte>;
 
 type Options = {
   caseMethod: "snake" | "camel" | "constant" | "pascal" | "none";
@@ -83,7 +60,7 @@ type Options = {
 
 type AcceptableClient = Client | Pool | PoolClient;
 
-export function connect(
+function connect(
   client: AcceptableClient,
   options: Options = {
     caseMethod: "snake",
@@ -115,33 +92,6 @@ function makeSql(
         let values: any[] = [];
 
         let text = state.text;
-        if (Object.keys(state.ctes).length) {
-          let ctes: CTE[] = [];
-
-          let walk = (dep: CTE) => {
-            const preexisting = ctes.find((v) => v.name === dep.name);
-            if (!preexisting) {
-              ctes.push(dep);
-            } else if (preexisting.statement.text !== dep.statement.text) {
-              throw new Error(`Conflicting cte name: ${dep.name}`);
-            }
-
-            dep.statement.ctes.forEach(walk);
-          };
-          state.ctes.forEach(walk);
-
-          text = `with ${ctes
-            .map((cte) => {
-              const { mode } = cte.options;
-              const { text, values: v } = cte.statement;
-              const key = cte.name;
-              const pragma = mode ? `${mode} ` : "";
-              values.push(...v);
-
-              return `${key} as ${pragma}(${text})`;
-            })
-            .join(", ")} (${state.text})`;
-        }
 
         values.push(...state.values);
         const segments = text.split(/\?/i);
@@ -195,41 +145,36 @@ function makeSql(
       nestFirst() {
         return sql`(select row_to_json(subquery) as nested from (${builder}) subquery limit 1)`;
       },
-      async all<T>(schema?: ZodSchema<T>) {
+      async all<T>() {
         const result = await this.exec();
         if (typeof result.rows === "undefined")
           throw new Error('Multiple statements in query, use "exec" instead.');
 
         const items = transformKeys(result.rows, caseMethodFromDb);
 
-        if (schema) return array(schema).parse(items);
         return items as T[];
       },
       async paginate<T>({
         page = 0,
         per = 250,
-        schema,
       }: {
         page?: number;
         per?: number;
-        schema?: ZodSchema<T>;
       } = {}) {
         page = Math.max(0, page);
 
-        const dep: CTE = cte("paginated", builder, {
-          mode: "not materialized",
-        });
-
         const paginated = sql`
-          select paginated.* from ${dep} limit ${per} offset ${page * per}
+          select paginated.*
+          from (${builder}) paginated
+          limit ${per}
+          offset ${page * per}
         `;
 
-        return paginated.all<T>(schema);
+        return paginated.all<T>();
       },
-      async first<T>(schema?: ZodSchema<T>) {
+      async first<T>() {
         const result = await this.all<T>();
         const item = result[0];
-        if (schema) return schema.parse(item);
         return item as T;
       },
       compile() {
@@ -252,7 +197,6 @@ function makeSql(
     let state: StatementState = {
       text: "",
       values: [],
-      ctes: [],
     };
 
     const toStatement = (value: InterpolatedValue) => {
@@ -262,7 +206,6 @@ function makeSql(
         const statement = Statement({
           text: "?",
           values: [value],
-          ctes: [],
         });
         return statement;
       }
@@ -280,7 +223,7 @@ function makeSql(
       let arg = values[index];
 
       if (arg === undefined)
-        throw new Error("undefined cannot be interpolated");
+        throw new Error("cannot bind undefined value to query");
 
       if (typeof arg !== "object" || arg === null || arg instanceof Date)
         arg = toStatement(arg);
@@ -288,18 +231,6 @@ function makeSql(
       if (isStatement(arg)) {
         state.text += arg.text;
         state.values.push(...arg.values);
-        for (let dep of arg.ctes) {
-          state.ctes.push(dep);
-        }
-      }
-
-      // CTEs
-      else if (isCTE(arg)) {
-        for (let dep of arg.statement.ctes) {
-          state.ctes.push(dep);
-        }
-        state.ctes.push(arg);
-        state.text += arg.name;
       }
 
       // arrays
@@ -488,15 +419,13 @@ function makeSql(
       Statement({
         text: escapeIdentifier(identifier),
         values: [],
-        ctes: [],
       }),
     join: (delimiter: Statement, [first, ...statements]: Statement[]) =>
       statements.reduce((acc, item) => sql`${acc} ${delimiter} ${item}`, first),
-    literal: (value: any) =>
-      Statement({ text: "?", values: [value], ctes: [] }),
+    literal: (value: any) => Statement({ text: "?", values: [value] }),
   });
 
   return sql;
 }
 
-export { isStatement, isCTE, Statement, cte, Sql };
+export { connect, isStatement, Statement, Sql };
