@@ -61,22 +61,14 @@ const users = await sql`
 `.paginate<User>(page, 100);
 ```
 
+Note: `paginate` will wrap your query in a `select q.* from (...) q limit ? offset ?` query.
+
 ## Composing Queries
 
 **Sub queries** can be used to compose queries together.
 
 ```ts
 sql`select * from table_name where other_id in (${sql`select id from other_table`}`);
-```
-
-**`sql.raw`** for building query from a string. This function does not sanitize any inputs so use with care.
-
-```ts
-const column = "id";
-
-if (!(column in attributes)) throw new Error("...");
-
-return await sql`select ${sql.raw(column)} from table_name`.many();
 ```
 
 **Objects**
@@ -153,6 +145,50 @@ await sql`
 // $3 = false
 ```
 
+**References**
+
+If you need to reference a column in a query you can use `sql.ref`:
+
+```ts
+await sql`
+  select ${sql.ref("users.id")}
+  from users
+`.all();
+```
+
+**Raw Values**
+
+Use `sql.raw` for building query from a string. This function does not sanitize any inputs so use with care. You probably want to use `sql.ref` instead.
+
+```ts
+const column = "id";
+
+if (!(column in attributes)) throw new Error("...");
+
+return await sql`select ${sql.raw(column)} from table_name`.many();
+```
+
+**Join**
+
+If you need to join values in a query you can use `sql.join`:
+
+```ts
+await sql`
+  select ${sql.join(["users.id", "users.name"], ", ")}
+  from users
+`.all();
+```
+
+**Literals**
+
+If you need to use a literal value in a query you can use `sql.literal`:
+
+```ts
+await sql`
+  insert into points (location) values (${sql.literal([100, 100])})
+`.all();
+```
+
 ## Nested Resources
 
 Eager load related data using `nestAll` and `nestFirst` helpers:
@@ -178,35 +214,28 @@ await sql`
 `.first();
 ```
 
-## Dependencies and Policies
+## Shared Policies
 
-If you would like to access a table but through a policy, you may use a dependency:
+Shared Policies can be used to share common logic between queries. Policies are functions that take a context and return a query. Policies can be used in other policies. Under the hood policies are functions that return a standard query.
 
 ```ts
 async function users(ctx) {
   const team = await getTeam(ctx);
-  return dependency(
-    "users",
-    sql`
-      select *
-      from users
-      where team_id = ${team.id}
-      and deleted_at is null
-    `,
-    { mode: "not materialized" }
-  );
+  return sql`
+    select *
+    from users
+    where team_id = ${team.id}
+    and deleted_at is null
+  `;
 }
 
 async function projects(ctx) {
   const team = await getTeam(ctx);
-  return dependency(
-    "projects",
-    sql`
-      select *
-      from projects
-      where team_id = ${team.id}
-    `
-  );
+  return sql`
+    select *
+    from projects
+    where team_id = ${team.id}
+  `;
 }
 
 const projects = await sql`
@@ -214,37 +243,33 @@ const projects = await sql`
     projects.*
     ${sql`
       select users.email
-      from ${await users(ctx)}
+      from (${await users(ctx)}) users
       where projects.user_id = users.id
     `} as contact_email
-  from ${await projects(ctx)}
+  from (${await projects(ctx)}) projects
 `;
 ```
 
-Dependencies are transformed to common table expressions. This example would run:
+Queries are inlined when used in other queries:
 
 ```sql
-with
-users as (
-  select *
-  from users
-  where team_id = $1
-  and deleted_at is null
-),
-projects as (
+select
+  projects.*,
+  (
+    select users.email
+    from (
+      select *
+      from users
+      where team_id = $1
+      and deleted_at is null
+    ) users
+    where projects.user_id = users.id
+  ) as contact_email
+from (
   select *
   from projects
   where team_id = $2
-) (
-  select
-    projects.*,
-    (
-      select users.email
-      from users
-      where projects.user_id = users.id
-    ) as contact_email
-  from projects
-)
+) projects
 ```
 
 ## Transactions
@@ -252,6 +277,7 @@ projects as (
 ```ts
 await sql.transaction(async (sql) => {
   // use sql like normal, commit and rollback are handled for you.
+  // if an error is thrown the transaction will be rolled back.
 });
 ```
 
