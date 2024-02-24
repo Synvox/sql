@@ -3,6 +3,10 @@ import type { Pool, PoolClient, QueryResult } from "pg";
 import { Client } from "pg";
 import { caseMethods, transformKey, transformKeys } from "./case";
 
+export { migrate, seed, types } from "./migrations";
+export { connect, isStatement };
+export type { Statement, Sql };
+
 const { escapeLiteral, escapeIdentifier } = Client.prototype;
 
 const debugQuery = Debug("sql:query");
@@ -19,19 +23,30 @@ function isStatement(anything: any): anything is Statement {
 type Value = any;
 
 type InterpolatedValue =
-  | Value
-  | (Value | StatementState)[]
-  | Record<string, Value | StatementState>
-  | Record<string, Value | StatementState>[]
-  | StatementState;
+  | number
+  | string
+  | boolean
+  | Date
+  | StatementState
+  | null;
 
 interface Sql {
   (strings: TemplateStringsArray, ...values: InterpolatedValue[]): Statement;
   transaction<T>(fn: (sql: Sql) => Promise<T>): Promise<T>;
   connection<T>(fn: (sql: Sql) => Promise<T>): Promise<T>;
   ref(identifier: string): Statement;
-  join(delimiter: Statement, statements: Statement[]): Statement;
+  raw(text: any): Statement;
   literal(value: any): Statement;
+  join(delimiter: Statement, statements: Statement[]): Statement;
+  array<T extends InterpolatedValue>(values: T[]): Statement;
+  values<T extends Record<string, InterpolatedValue>>(
+    values: T[] | T
+  ): Statement;
+  set<T extends Record<string, InterpolatedValue>>(values: T): Statement;
+  and<T extends Record<string, InterpolatedValue>>(values: T): Statement;
+  or<T extends Record<string, InterpolatedValue>>(values: T): Statement;
+  identifierFromDb: (key: string) => string;
+  identifierToDb: (key: string) => string;
 }
 
 interface StatementState {
@@ -50,6 +65,7 @@ interface Statement extends StatementState {
   paginate: <T>(options?: { page?: number; per?: number }) => Promise<T[]>;
   all: <T>() => Promise<T[]>;
   first: <T>() => Promise<T>;
+  exists: () => Promise<boolean>;
   compile: () => string;
 }
 
@@ -177,6 +193,10 @@ function makeSql(
         const item = result[0];
         return item as T;
       },
+      async exists() {
+        const result = await this.all();
+        return result.length > 0;
+      },
       compile() {
         const { text, values } = this.toNative();
         return text.replace(/\$\d/g, () =>
@@ -231,122 +251,8 @@ function makeSql(
       if (isStatement(arg)) {
         state.text += arg.text;
         state.values.push(...arg.values);
-      }
-
-      // arrays
-      else if (Array.isArray(arg) && typeof arg[0] !== "object") {
-        const list = arg as Value[];
-        state.text += list
-          .map((item) => {
-            const statement = toStatement(item);
-            state.values.push(...statement.values);
-            return statement.text;
-          })
-          .join(",");
-      }
-
-      // special query type interpolations
-      else {
-        const whereIndex = state.text.lastIndexOf("where");
-        const insertIndex = state.text.lastIndexOf(
-          "insert",
-          whereIndex < 0 ? undefined : whereIndex
-        );
-        const updateIndex = state.text.lastIndexOf(
-          "update",
-          Math.max(insertIndex, whereIndex) < 0
-            ? undefined
-            : Math.max(insertIndex, whereIndex)
-        );
-
-        const isInsert = insertIndex > whereIndex && insertIndex > updateIndex;
-        const isUpdate =
-          !isInsert && updateIndex > whereIndex && updateIndex > insertIndex;
-        const isWhere = !isInsert && !isUpdate;
-
-        // arrays of objects
-        if (
-          Array.isArray(arg) &&
-          typeof arg[0] === "object" &&
-          arg[0] !== null
-        ) {
-          if (isInsert) {
-            const arr = arg as Record<string, Value>[];
-            // (key1, key2) values (value1, value2)
-            state.text += "(";
-            state.text += Object.keys(arr[0])
-              .map((key) => sanitizeIdentifier(key))
-              .join(", ");
-            state.text += ") values ";
-            state.text += arr
-              .map((obj) => {
-                let text = "(";
-                const values = Object.values(obj).map((value) =>
-                  toStatement(value)
-                );
-
-                text += values
-                  .map((v) => {
-                    state.values.push(...v.values);
-                    return v.text;
-                  })
-                  .join(",");
-
-                text += ")";
-                return text;
-              })
-              .join(",");
-          }
-        }
-
-        // objects
-        else if (typeof arg === "object" && arg !== null) {
-          const obj = Object.fromEntries(
-            Object.entries(arg).map(([key, value]) => [
-              sanitizeIdentifier(key),
-              toStatement(value),
-            ])
-          );
-
-          if (isInsert) {
-            // (key1, key2) values (value1, value2)
-            state.text += "(";
-            state.text += Object.keys(obj).join(", ");
-            state.text += ") values (";
-            state.text += Object.entries(obj)
-              .map(([_, val]) => {
-                state.values.push(...val.values);
-                return val.text;
-              })
-              .join(", ");
-            state.text += ")";
-          } else if (isUpdate) {
-            // key1 = value1, key2 = value2
-            state.text += Object.entries(obj)
-              .map(([key, val]) => {
-                state.values.push(...val.values);
-                return `${key} = ${val.text}`;
-              })
-              .join(", ");
-          } else if (isWhere) {
-            // key1 = value1 and key2 = value2
-            state.text += "(";
-            if (Object.keys(obj).length === 0) state.text += "true";
-            else
-              state.text += Object.entries(obj)
-                .map(([key, value]) => {
-                  const isNull =
-                    value.values[0] === null && value.values.length === 1;
-                  if (isNull) return `${key} is null`;
-                  else {
-                    state.values.push(...value.values);
-                    return `${key} = ${value.text}`;
-                  }
-                })
-                .join(" and ");
-            state.text += ")";
-          }
-        }
+      } else {
+        throw new Error("invalid value in query: " + JSON.stringify(arg));
       }
     }
 
@@ -420,12 +326,83 @@ function makeSql(
         text: escapeIdentifier(identifier),
         values: [],
       }),
-    join: (delimiter: Statement, [first, ...statements]: Statement[]) =>
-      statements.reduce((acc, item) => sql`${acc} ${delimiter} ${item}`, first),
+    raw: (text: string) =>
+      Statement({
+        text,
+        values: [],
+      }),
     literal: (value: any) => Statement({ text: "?", values: [value] }),
+    join: (delimiter: Statement, [first, ...statements]: Statement[]) =>
+      statements.reduce((acc, item) => sql`${acc}${delimiter}${item}`, first),
+    array<T extends InterpolatedValue>(values: T[]) {
+      return sql`${sql.join(
+        sql`, `,
+        values.map((v) => sql`${v}`)
+      )}`;
+    },
+    values<T extends Record<string, InterpolatedValue>>(values: T[] | T) {
+      if (!Array.isArray(values)) values = [values];
+
+      if (values.length === 0) {
+        throw new Error("values must not be empty");
+      }
+
+      const keys = new Set<string>([
+        ...values.map((row) => Object.keys(row)).flat(),
+      ]);
+      return sql`(${sql.join(
+        sql`, `,
+        Array.from(keys).map((key) => sql.raw(sanitizeIdentifier(key)))
+      )}) values ${sql.join(
+        sql`, `,
+        values.map(
+          (row) =>
+            sql`(${sql.join(
+              sql`, `,
+              Object.keys(row).map((key) => sql`${row[key]}`)
+            )})`
+        )
+      )}`;
+    },
+    set<T extends Record<string, InterpolatedValue>>(values: T) {
+      if (Object.keys(values).length === 0) {
+        throw new Error("values must not be empty");
+      }
+
+      return sql`set ${sql.join(
+        sql`, `,
+        Object.keys(values).map(
+          (v) => sql`${sql.raw(sanitizeIdentifier(v))} = ${values[v]}`
+        )
+      )}`;
+    },
+    and<T extends Record<string, InterpolatedValue>>(values: T) {
+      return sql`(${sql.join(
+        sql` and `,
+        Object.keys(values).map((v) =>
+          values[v] === null
+            ? sql`${sql.raw(sanitizeIdentifier(v))} is null`
+            : sql`${sql.raw(sanitizeIdentifier(v))} = ${values[v]}`
+        )
+      )})`;
+    },
+    or<T extends Record<string, InterpolatedValue>>(values: T) {
+      return sql`(${sql.join(
+        sql` or `,
+        Object.keys(values).map((v) =>
+          values[v] === null
+            ? sql`${sql.raw(sanitizeIdentifier(v))} is null`
+            : sql`${sql.raw(sanitizeIdentifier(v))} = ${values[v]}`
+        )
+      )})`;
+    },
+    identifierFromDb(key: string) {
+      return transformKey(key, caseMethodFromDb);
+    },
+    identifierToDb(key: string) {
+      return transformKey(key, caseMethodToDb);
+    },
   });
 
   return sql;
 }
-
-export { connect, isStatement, Statement, Sql };

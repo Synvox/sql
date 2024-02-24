@@ -1,3 +1,4 @@
+import { describe, afterEach, beforeEach, afterAll, it, expect } from "vitest";
 import { Pool } from "pg";
 import { connect } from "../src";
 
@@ -74,21 +75,23 @@ describe("substitutions", () => {
     });
   });
 
-  it("supports joining statements", () => {
+  it("supports or statements", () => {
     expect(
-      sql`select * from users where ${sql.join(sql`or`, [
-        sql`id = ${1}`,
-        sql`public = ${true}`,
-      ])}`
+      sql`select * from users where ${sql.or({
+        id: 1,
+        public: true,
+      })}`
     ).toMatchObject({
-      text: `select * from users where id = ? or public = ?`,
+      text: `select * from users where ("id" = ? or "public" = ?)`,
       values: [1, true],
     });
   });
 
   it("supports arrays", () => {
-    expect(sql`select * from users where id in (${[1, 2, 3]})`).toMatchObject({
-      text: "select * from users where id in (?,?,?)",
+    expect(
+      sql`select * from users where id in (${sql.array([1, 2, 3])})`
+    ).toMatchObject({
+      text: "select * from users where id in (?, ?, ?)",
       values: [1, 2, 3],
     });
   });
@@ -115,10 +118,10 @@ describe("substitutions", () => {
 
   it("supports where values", () => {
     expect(
-      sql`select * from users where ${{
+      sql`select * from users where ${sql.and({
         name: "Ryan",
         number: 0,
-      }}`
+      })}`
     ).toMatchObject({
       text: 'select * from users where ("name" = ? and "number" = ?)',
       values: ["Ryan", 0],
@@ -127,10 +130,10 @@ describe("substitutions", () => {
 
   it("supports where null values", () => {
     expect(
-      sql`select * from users where ${{
+      sql`select * from users where ${sql.and({
         name: "Ryan",
         number: null,
-      }}`
+      })}`
     ).toMatchObject({
       text: 'select * from users where ("name" = ? and "number" is null)',
       values: ["Ryan"],
@@ -139,10 +142,10 @@ describe("substitutions", () => {
 
   it("supports inserting values", () => {
     expect(
-      sql`insert into users ${{
+      sql`insert into users ${sql.values({
         name: "Ryan",
         number: 0,
-      }}`
+      })}`
     ).toMatchObject({
       text: 'insert into users ("name", "number") values (?, ?)',
       values: ["Ryan", 0],
@@ -151,7 +154,7 @@ describe("substitutions", () => {
 
   it("supports inserting multiple values", () => {
     expect(
-      sql`insert into users ${[
+      sql`insert into users ${sql.values([
         {
           name: "Ryan",
           number: 0,
@@ -160,19 +163,19 @@ describe("substitutions", () => {
           name: "Nolan",
           number: 1,
         },
-      ]}`
+      ])}`
     ).toMatchObject({
-      text: 'insert into users ("name", "number") values (?,?),(?,?)',
+      text: 'insert into users ("name", "number") values (?, ?), (?, ?)',
       values: ["Ryan", 0, "Nolan", 1],
     });
   });
 
   it("supports setting values", () => {
     expect(
-      sql`update users set ${{
+      sql`update users ${sql.set({
         name: "Ryan",
         active: true,
-      }}`
+      })}`
     ).toMatchObject({
       text: 'update users set "name" = ?, "active" = ?',
       values: ["Ryan", true],
@@ -181,10 +184,10 @@ describe("substitutions", () => {
 
   it("supports updating values", () => {
     expect(
-      sql`update users set ${{
+      sql`update users ${sql.set({
         name: "Ryan",
         active: true,
-      }}`
+      })}`
     ).toMatchObject({
       text: 'update users set "name" = ?, "active" = ?',
       values: ["Ryan", true],
@@ -193,7 +196,7 @@ describe("substitutions", () => {
 
   it("supports where", () => {
     expect(
-      sql`select * from table_name where ${{ val: 1, val2: false }}`
+      sql`select * from table_name where ${sql.and({ val: 1, val2: false })}`
     ).toMatchObject({
       text: 'select * from table_name where ("val" = ? and "val2" = ?)',
       values: [1, false],
@@ -202,11 +205,11 @@ describe("substitutions", () => {
 
   it("supports interpolating within arrays and objects", async () => {
     expect(
-      await sql`insert into test.users ${{
+      sql`insert into test.users ${sql.values({
         firstName: "Ryan",
         lastName: "Allred",
         createdAt: sql`now()`,
-      }}`.compile()
+      })}`.compile()
     ).toEqual(
       `insert into test.users ("first_name", "last_name", "created_at") values ('Ryan', 'Allred', now())`
     );
@@ -214,10 +217,10 @@ describe("substitutions", () => {
 
   it("supports compiling to a plain string", async () => {
     expect(
-      await sql`insert into test.users ${{
+      await sql`insert into test.users ${sql.values({
         firstName: "Ryan",
         lastName: "Allred",
-      }}`.compile()
+      })}`.compile()
     ).toEqual(
       `insert into test.users ("first_name", "last_name") values ('Ryan', 'Allred')`
     );
@@ -227,7 +230,7 @@ describe("substitutions", () => {
 describe("connects to postgres", () => {
   beforeEach(async () => {
     await sql`
-      drop schema if exists test;
+      drop schema if exists test cascade;
       create schema test;
     `.exec();
   });
@@ -252,10 +255,10 @@ describe("connects to postgres", () => {
     `.exec();
 
     await sql`
-      insert into test.users ${{
+      insert into test.users ${sql.values({
         firstName: "Ryan",
         lastName: "Allred",
-      }}
+      })}
     `.exec();
 
     const result = await sql`select * from test.users`.all();
@@ -267,7 +270,7 @@ describe("connects to postgres", () => {
     await expect(
       sql`limit from`.exec()
     ).rejects.toThrowErrorMatchingInlineSnapshot(
-      `"syntax error at or near \\"limit\\""`
+      `[error: syntax error at or near "limit"]`
     );
 
     await expect(
@@ -275,7 +278,7 @@ describe("connects to postgres", () => {
         areYouSureYouKnowWhatYouAreDoing: true,
       })
     ).rejects.toThrowErrorMatchingInlineSnapshot(
-      `"syntax error at or near \\"limit\\""`
+      `[error: syntax error at or near "limit"]`
     );
 
     await expect(
@@ -284,19 +287,20 @@ describe("connects to postgres", () => {
         areYouSureYouKnowWhatYouAreDoing: false,
       })
     ).rejects.toThrowErrorMatchingInlineSnapshot(
-      `"You must pass {areYouSureYouKnowWhatYouAreDoing: true} to this function to execute it without parameters"`
+      `[Error: You must pass {areYouSureYouKnowWhatYouAreDoing: true} to this function to execute it without parameters]`
     );
 
     await expect(
       sql`select 2+2; select 4+4`.all()
     ).rejects.toThrowErrorMatchingInlineSnapshot(
-      `"Multiple statements in query, use \\"exec\\" instead."`
+      `[Error: Multiple statements in query, use "exec" instead.]`
     );
 
     expect(
+      //@ts-expect-error
       () => sql`select ${undefined} + 2`
     ).toThrowErrorMatchingInlineSnapshot(
-      `"cannot bind undefined value to query"`
+      `[Error: cannot bind undefined value to query]`
     );
   });
 
@@ -310,10 +314,10 @@ describe("connects to postgres", () => {
     `.exec();
 
     await sql`
-      insert into test.users ${{
+      insert into test.users ${sql.values({
         firstName: "Ryan",
         lastName: "Allred",
-      }}
+      })}
     `.exec();
 
     const result = await sql`select * from test.users`.first();
@@ -335,10 +339,10 @@ describe("connects to postgres", () => {
     `.exec();
 
     await sql`
-      insert into test.users ${{
+      insert into test.users ${sql.values({
         firstName: "Ryan",
         lastName: "Allred",
-      }}
+      })}
     `.exec();
 
     const result = await sql`select * from test.users`.all();
@@ -359,9 +363,9 @@ describe("connects to postgres", () => {
     `.exec();
 
     await sql`
-      insert into test.logs ${{
-        data: { thing: 0 },
-      }}
+      insert into test.logs ${sql.values({
+        data: sql.literal({ thing: 0 }),
+      })}
     `.exec();
 
     const result = await sql`select * from test.logs`.all();
@@ -378,9 +382,9 @@ describe("connects to postgres", () => {
     `.exec();
 
     await sql`
-      insert into test.logs ${{
-        data: ["thing1", "thing2"],
-      }}
+      insert into test.logs ${sql.values({
+        data: sql.literal(["thing1", "thing2"]),
+      })}
     `.exec();
 
     const result = await sql`select * from test.logs`.all();
@@ -397,14 +401,14 @@ describe("connects to postgres", () => {
     `.exec();
 
     await sql`
-      insert into test.logs ${[
+      insert into test.logs ${sql.values([
         {
-          data: ["thing1", "thing2"],
+          data: sql.literal(["thing1", "thing2"]),
         },
         {
-          data: ["thing3", "thing4"],
+          data: sql.literal(["thing3", "thing4"]),
         },
-      ]}
+      ])}
     `.exec();
 
     const stmt = sql`select * from test.logs where data = ${sql.literal([
@@ -430,10 +434,10 @@ describe("connects to postgres", () => {
     `.exec();
 
     await sql`
-      insert into test.logs ${{
+      insert into test.logs ${sql.values({
         date: new Date("2020-01-01T00:00:00.000Z"),
-        data: Buffer.from("hello"),
-      }}
+        data: sql.literal(Buffer.from("hello")),
+      })}
     `.exec();
 
     const result = await sql`select * from test.logs`.first();
@@ -475,12 +479,12 @@ describe("connects to postgres", () => {
     const rows = await sql`select * from test.logs`.all();
 
     expect(rows).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "body": "hello2",
           "id": 2,
         },
-        Object {
+        {
           "body": "hello1, hello2",
           "id": 3,
         },
@@ -501,15 +505,15 @@ describe("connects to postgres", () => {
     });
 
     expect((results as any).map((r: any) => r.rows)).toMatchInlineSnapshot(`
-      Array [
-        Array [
-          Object {
+      [
+        [
+          {
             "body": "hello2",
             "id": 2,
           },
         ],
-        Array [
-          Object {
+        [
+          {
             "body": "hello1, hello2",
             "id": 3,
           },
@@ -541,25 +545,25 @@ describe("connects to postgres", () => {
       );
     `.exec();
 
-    const user = (await sql`insert into test.users ${{
+    const user = (await sql`insert into test.users ${sql.values({
       name: "Ryan",
-    }} returning *`.first<{ id: number; name: string }>())!;
+    })} returning *`.first<{ id: number; name: string }>())!;
 
-    const post1 = (await sql`insert into test.posts ${{
+    const post1 = (await sql`insert into test.posts ${sql.values({
       name: "My Post",
-    }} returning *`.first<{ id: number; name: string }>())!;
-    await sql`insert into test.post_likes ${{
+    })} returning *`.first<{ id: number; name: string }>())!;
+    await sql`insert into test.post_likes ${sql.values({
       userId: user.id,
       postId: post1.id,
-    }} returning *`.first();
+    })} returning *`.first();
 
-    const post2 = (await sql`insert into test.posts ${{
+    const post2 = (await sql`insert into test.posts ${sql.values({
       name: "My Post",
-    }} returning *`.first<{ id: number; name: string }>())!;
-    await sql`insert into test.post_likes ${{
+    })} returning *`.first<{ id: number; name: string }>())!;
+    await sql`insert into test.post_likes ${sql.values({
       userId: user.id,
       postId: post2.id,
-    }} returning *`.first();
+    })} returning *`.first();
 
     const result = await sql`
       select
@@ -581,21 +585,21 @@ describe("connects to postgres", () => {
     `.first();
 
     expect(result).toMatchInlineSnapshot(`
-      Object {
+      {
         "id": 1,
-        "likedPosts": Array [
-          Object {
+        "likedPosts": [
+          {
             "id": 1,
-            "post": Object {
+            "post": {
               "id": 1,
               "name": "My Post",
             },
             "postId": 1,
             "userId": 1,
           },
-          Object {
+          {
             "id": 2,
-            "post": Object {
+            "post": {
               "id": 2,
               "name": "My Post",
             },
@@ -631,27 +635,27 @@ describe("connects to postgres", () => {
       );
     `.exec();
 
-    const user = (await sql`insert into test.users ${{
+    const user = (await sql`insert into test.users ${sql.values({
       name: "Ryan",
-    }} returning *`.first<{ id: number; name: string }>())!;
+    })} returning *`.first<{ id: number; name: string }>())!;
 
-    const post1 = (await sql`insert into test.posts ${{
+    const post1 = (await sql`insert into test.posts ${sql.values({
       name: "My Post",
-    }} returning *`.first<{ id: number; name: string }>())!;
+    })} returning *`.first<{ id: number; name: string }>())!;
 
-    await sql`insert into test.post_likes ${{
+    await sql`insert into test.post_likes ${sql.values({
       userId: user.id,
       postId: post1.id,
-    }}`.exec();
+    })}`.exec();
 
-    const post2 = (await sql`insert into test.posts ${{
+    const post2 = (await sql`insert into test.posts ${sql.values({
       name: "My Post",
-    }} returning *`.first<{ id: number; name: string }>())!;
+    })} returning *`.first<{ id: number; name: string }>())!;
 
-    await sql`insert into test.post_likes ${{
+    await sql`insert into test.post_likes ${sql.values({
       userId: user.id,
       postId: post2.id,
-    }}`.exec();
+    })}`.exec();
 
     async function users() {
       return sql`
@@ -702,23 +706,23 @@ describe("connects to postgres", () => {
     );
     const result = await stmt.paginate();
     expect(result).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "id": 1,
           "name": "Ryan",
-          "postLikes": Array [
-            Object {
+          "postLikes": [
+            {
               "id": 1,
-              "post": Object {
+              "post": {
                 "id": 1,
                 "name": "My Post",
               },
               "postId": 1,
               "userId": 1,
             },
-            Object {
+            {
               "id": 2,
-              "post": Object {
+              "post": {
                 "id": 2,
                 "name": "My Post",
               },
@@ -756,25 +760,25 @@ describe("connects to postgres", () => {
 
     type User = { id: number; name: string };
     type Post = { id: number; name: string };
-    const user = (await sql`insert into test.users ${{
+    const user = (await sql`insert into test.users ${sql.values({
       name: "Ryan",
-    }} returning *`.first<User>())!;
+    })} returning *`.first<User>())!;
 
-    const post1 = (await sql`insert into test.posts ${{
+    const post1 = (await sql`insert into test.posts ${sql.values({
       name: "My Post",
-    }} returning *`.first<Post>())!;
-    await sql`insert into test.post_likes ${{
+    })} returning *`.first<Post>())!;
+    await sql`insert into test.post_likes ${sql.values({
       userId: user.id,
       postId: post1.id,
-    }} returning *`.first();
+    })} returning *`.first();
 
-    const post2 = (await sql`insert into test.posts ${{
+    const post2 = (await sql`insert into test.posts ${sql.values({
       name: "My Post",
-    }} returning *`.first<Post>())!;
-    await sql`insert into test.post_likes ${{
+    })} returning *`.first<Post>())!;
+    await sql`insert into test.post_likes ${sql.values({
       userId: user.id,
       postId: post2.id,
-    }} returning *`.first();
+    })} returning *`.first();
 
     async function posts() {
       // if this needed to come from somewhere
@@ -802,16 +806,16 @@ describe("connects to postgres", () => {
     const result = await stmt.first<Post>();
 
     expect(result).toMatchInlineSnapshot(`
-      Object {
+      {
         "id": 1,
         "name": "My Post",
       }
     `);
 
     expect(stmt.toNative()).toMatchInlineSnapshot(`
-      Object {
+      {
         "text": "select * from ( select * from test.posts where exists ( select * from test.post_likes where post_likes.post_id = posts.id and user_id = $1 ) ) posts where id = $2",
-        "values": Array [
+        "values": [
           1,
           1,
         ],
@@ -832,10 +836,10 @@ describe("connects to postgres", () => {
       try {
         await sql.transaction(async (sql) => {
           await sql`
-            insert into test.users ${{
+            insert into test.users ${sql.values({
               firstName: "Ryan",
               lastName: "Allred",
-            }}
+            })}
           `.exec();
 
           const result = await sql`select * from test.users`.all();
@@ -865,10 +869,10 @@ describe("connects to postgres", () => {
       try {
         await sql.transaction(async (sql) => {
           await sql`
-            insert into test.users ${{
+            insert into test.users ${sql.values({
               firstName: "Ryan",
               lastName: "Allred",
-            }}
+            })}
           `.exec();
 
           const result = await sql`select * from test.users`.all();
@@ -897,19 +901,19 @@ describe("connects to postgres", () => {
 
       await sql.transaction(async (sql) => {
         await sql`
-          insert into test.users ${{
+          insert into test.users ${sql.values({
             firstName: "Ryan",
             lastName: "Allred",
-          }}
+          })}
         `.exec();
 
         try {
           await sql.transaction(async (sql) => {
             await sql`
-              insert into test.users ${{
+              insert into test.users ${sql.values({
                 firstName: "Ryan",
                 lastName: "Allred",
-              }}
+              })}
             `.exec();
 
             const result = await sql`select * from test.users`.all();

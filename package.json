@@ -1,42 +1,43 @@
 {
   "name": "@synvox/sql",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "license": "MIT",
   "main": "dist/index.js",
-  "module": "dist/querybuilder.esm.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "start": "vitest",
+    "build": "npx tsup src/* --dts",
+    "test": "vitest run",
+    "prepublish": "npm run test && npm run build",
+    "publish": "np"
+  },
   "typings": "dist/index.d.ts",
   "repository": "https://github.com/Synvox/sql",
   "files": [
     "dist"
   ],
-  "scripts": {
-    "start": "tsdx watch",
-    "build": "tsdx build",
-    "test": "tsdx test",
-    "lint": "tsdx lint"
-  },
-  "husky": {
-    "hooks": {
-      "pre-commit": "pretty-quick --staged"
-    }
+  "jest": {
+    "testPathIgnorePatterns": [
+      "test/types"
+    ]
   },
   "devDependencies": {
     "@types/debug": "4.1.7",
-    "@types/jest": "29.4.0",
     "@types/pg": "8.6.6",
-    "husky": "8.0.3",
-    "prettier": "2.8.3",
-    "pretty-quick": "3.1.3",
-    "tsdx": "0.14.1",
-    "tslib": "2.5.0",
-    "typescript": "4.9.5",
-    "zod": "3.21.4"
+    "@types/pluralize": "0.0.33",
+    "np": "9.2.0",
+    "prettier": "3.2.5",
+    "tslib": "2.6.2",
+    "tsup": "8.0.2",
+    "typescript": "5.3.3",
+    "vitest": "1.3.1"
   },
   "dependencies": {
     "debug": "*",
-    "pg": "*"
+    "pg": "*",
+    "pluralize": "8.0.0"
   },
   "engines": {
-    "node": ">=12"
+    "node": ">=18"
   }
 }

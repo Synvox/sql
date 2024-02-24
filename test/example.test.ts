@@ -1,3 +1,4 @@
+import { beforeAll, afterAll, it, expect } from "vitest";
 import { Pool } from "pg";
 import { connect } from "../src";
 
@@ -7,7 +8,7 @@ type Sql = typeof sql;
 
 beforeAll(async () => {
   await sql`
-    drop schema if exists test_example;
+    drop schema if exists test_example cascade;
     create schema test_example;
   `.exec();
 });
@@ -41,20 +42,22 @@ it("supports this example", async () => {
   // seed
   await sql`
     insert into test_example.users
-    ${["Alice", "Bob", "Carol"].map((name) => ({
-      firstName: name,
-      lastName: "Smith",
-    }))}
+    ${sql.values(
+      ["Alice", "Bob", "Carol"].map((name) => ({
+        firstName: name,
+        lastName: "Smith",
+      }))
+    )}
   `.exec();
 
   await sql`
     insert into test_example.notes
-    ${[
+    ${sql.values([
       { body: "Alice's first note", authorId: 1 },
       { body: "Alice's second note", authorId: 1 },
       { body: "Bob's first note", authorId: 2 },
       { body: "Carol's first note", authorId: 3 },
-    ]}
+    ])}
   `.exec();
 
   // modules
@@ -89,7 +92,7 @@ it("supports this example", async () => {
     ) {
       return await sql`
         update test_example.users
-        set ${{ firstName, lastName }}
+        ${sql.set({ firstName, lastName })}
         where id = ${ctx.userId}
         returning *
       `.first<User>();
@@ -118,7 +121,7 @@ it("supports this example", async () => {
     ) {
       return await sql`
         update test_example.notes
-        set ${{ body: update.body }}
+        ${sql.set({ body: update.body })}
         where author_id = ${ctx.userId}
         and id = ${where.id}
         returning *
@@ -132,7 +135,7 @@ it("supports this example", async () => {
     ) {
       return await sql`
         insert into test_example.notes
-        ${{ body: insert.body, authorId: ctx.userId }}
+        ${sql.values({ body: insert.body, authorId: ctx.userId })}
         returning *
       `.first<Note>();
     }
