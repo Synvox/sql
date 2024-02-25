@@ -60,8 +60,6 @@ interface Statement extends StatementState {
   execRaw: (opt: {
     areYouSureYouKnowWhatYouAreDoing: true;
   }) => Promise<QueryResult>;
-  nestAll: () => Statement;
-  nestFirst: () => Statement;
   paginate: <T>(options?: { page?: number; per?: number }) => Promise<T[]>;
   all: <T>() => Promise<T[]>;
   first: <T>() => Promise<T>;
@@ -154,12 +152,6 @@ function makeSql(
           debugError("Query failed: ", text);
           throw e;
         }
-      },
-      nestAll() {
-        return sql`coalesce((select jsonb_agg(subquery) as nested from (${builder}) subquery), '[]'::jsonb)`;
-      },
-      nestFirst() {
-        return sql`(select row_to_json(subquery) as nested from (${builder}) subquery limit 1)`;
       },
       async all<T>() {
         const result = await this.exec();
@@ -335,10 +327,10 @@ function makeSql(
     join: (delimiter: Statement, [first, ...statements]: Statement[]) =>
       statements.reduce((acc, item) => sql`${acc}${delimiter}${item}`, first),
     array<T extends InterpolatedValue>(values: T[]) {
-      return sql`${sql.join(
+      return sql`(${sql.join(
         sql`, `,
         values.map((v) => sql`${v}`)
-      )}`;
+      )})`;
     },
     values<T extends Record<string, InterpolatedValue>>(values: T[] | T) {
       if (!Array.isArray(values)) values = [values];

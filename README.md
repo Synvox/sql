@@ -1,9 +1,6 @@
 # `@synvox/sql`
 
-![Travis (.org)](https://img.shields.io/travis/synvox/sql)
-![Codecov](https://img.shields.io/codecov/c/github/synvox/sql)
-
-**`sql` is another sql template string library.**
+**`sql` is another sql template string library**
 
 ```
 npm i @synvox/sql
@@ -53,6 +50,14 @@ const user = await sql`
 `.first<User>();
 ```
 
+**`exists`** returns a boolean if a row exists.
+
+```ts
+const runJobs = await sql`
+  select * from jobs where run_at < now() limit 1
+`.exists();
+```
+
 **`paginate`** for getting the rows returned from a query.
 
 ```ts
@@ -71,13 +76,11 @@ Note: `paginate` will wrap your query in a `select q.* from (...) q limit ? offs
 sql`select * from table_name where other_id in (${sql`select id from other_table`}`);
 ```
 
-**Objects**
-
-Objects are converted to a sql equivalent based on the query:
+**Query Builders**
 
 ```ts
 await sql`
-  insert into users ${{ name: "Ryan", active: false }}
+  insert into users ${sql.values({ name: "Ryan", active: false })}
 `.exec();
 // Executes:
 // insert into users(name, active) values ($0, $1)
@@ -87,7 +90,23 @@ await sql`
 
 ```ts
 await sql`
-  update users set ${{ name: "Ryan", active: true }}
+  insert into users ${sql.values([
+    { name: "Ryan", active: false },
+    { name: "Nolan", active: false },
+  ])}
+`.exec();
+// Executes:
+// insert into users(name, active) values ($0, $1), ($2, $3)
+// $0 = "Ryan"
+// $1 = false
+// $2 = "Nolan"
+// $3 = false
+```
+
+```ts
+await sql`
+  update users
+  ${sql.set({ name: "Ryan", active: true })}
   where id = ${1}
 `.exec();
 // Executes:
@@ -101,10 +120,22 @@ await sql`
 await sql`
   select *
   from users
-  where ${{ id: 1, active: true }}
+  where ${sql.and({ id: 1, active: true })}
 `.exec();
 // Executes:
 // select * from users where (id = $0 and active = $1)
+// $0 = 1
+// $1 = true
+```
+
+```ts
+await sql`
+  select *
+  from users
+  where ${sql.or({ id: 1, active: true })}
+`.exec();
+// Executes:
+// select * from users where (id = $0 or active = $1)
 // $0 = 1
 // $1 = true
 ```
@@ -117,32 +148,13 @@ Arrays are converted to comma separated values:
 await sql`
   select *
   from users
-  where id in (${[1, 2, 3]})
+  where id in ${sql.array([1, 2, 3])}
 `.exec();
 // Executes:
 // select * from users where id in ($0, $1, $2)
 // $0 = 1
 // $1 = 2
 // $2 = 3
-```
-
-**Arrays of Objects**
-
-Arrays of Objects are only supported on insert statements:
-
-```ts
-await sql`
-  insert into users ${[
-    { name: "Ryan", active: false },
-    { name: "Nolan", active: false },
-  ]}
-`.exec();
-// Executes:
-// insert into users(name, active) values ($0, $1), ($2, $3)
-// $0 = "Ryan"
-// $1 = false
-// $2 = "Nolan"
-// $3 = false
 ```
 
 **References**
@@ -174,7 +186,7 @@ If you need to join values in a query you can use `sql.join`:
 
 ```ts
 await sql`
-  select ${sql.join(["users.id", "users.name"], ", ")}
+  select ${sql.join([sql`users.id`, sql`users.name`], ", ")}
   from users
 `.all();
 ```
@@ -187,89 +199,6 @@ If you need to use a literal value in a query you can use `sql.literal`:
 await sql`
   insert into points (location) values (${sql.literal([100, 100])})
 `.all();
-```
-
-## Nested Resources
-
-Eager load related data using `nestAll` and `nestFirst` helpers:
-
-```ts
-await sql`
-  select
-    users.*,
-    ${sql`
-      select
-        post_likes.*,
-        ${sql`
-          select posts.*
-          from test.posts
-          where posts.id = post_likes.post_id
-          limit 1
-        `.nestFirst()} as post
-      from test.post_likes
-      where post_likes.user_id = users.id
-    `.nestAll()} as liked_posts
-  from test.users
-  where users.id = ${user.id}
-`.first();
-```
-
-## Shared Policies
-
-Shared Policies can be used to share common logic between queries. Policies are functions that take a context and return a query. Policies can be used in other policies. Under the hood policies are functions that return a standard query.
-
-```ts
-async function users(ctx) {
-  const team = await getTeam(ctx);
-  return sql`
-    select *
-    from users
-    where team_id = ${team.id}
-    and deleted_at is null
-  `;
-}
-
-async function projects(ctx) {
-  const team = await getTeam(ctx);
-  return sql`
-    select *
-    from projects
-    where team_id = ${team.id}
-  `;
-}
-
-const projects = await sql`
-  select
-    projects.*
-    ${sql`
-      select users.email
-      from (${await users(ctx)}) users
-      where projects.user_id = users.id
-    `} as contact_email
-  from (${await projects(ctx)}) projects
-`;
-```
-
-Queries are inlined when used in other queries:
-
-```sql
-select
-  projects.*,
-  (
-    select users.email
-    from (
-      select *
-      from users
-      where team_id = $1
-      and deleted_at is null
-    ) users
-    where projects.user_id = users.id
-  ) as contact_email
-from (
-  select *
-  from projects
-  where team_id = $2
-) projects
 ```
 
 ## Transactions

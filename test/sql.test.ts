@@ -89,7 +89,7 @@ describe("substitutions", () => {
 
   it("supports arrays", () => {
     expect(
-      sql`select * from users where id in (${sql.array([1, 2, 3])})`
+      sql`select * from users where id in ${sql.array([1, 2, 3])}`
     ).toMatchObject({
       text: "select * from users where id in (?, ?, ?)",
       values: [1, 2, 3],
