@@ -1,230 +1,221 @@
 import Debug from "debug";
-import type { Pool, PoolClient, QueryResult } from "pg";
-import { Client } from "pg";
 import { caseMethods, transformKey, transformKeys } from "./case";
+import { escapeIdentifier, escapeLiteral } from "./escape";
 
 export { migrate, seed, types } from "./migrations";
-export { connect, isStatement };
-export type { Statement, Sql };
+export { connect };
 
-const { escapeLiteral, escapeIdentifier } = Client.prototype;
+type InterpolatedValue = number | string | boolean | Date | SqlFragment | null;
 
-const debugQuery = Debug("sql:query");
-const debugBinding = Debug("sql:binding");
-const debugTransaction = Debug("sql:transaction");
-const debugError = Debug("sql:error");
-
-const statementWeakSet = new WeakSet<Statement>();
-
-function isStatement(anything: any): anything is Statement {
-  return anything && statementWeakSet.has(anything);
-}
-
-type Value = any;
-
-type InterpolatedValue =
-  | number
-  | string
-  | boolean
-  | Date
-  | StatementState
-  | null;
-
-interface Sql {
-  (strings: TemplateStringsArray, ...values: InterpolatedValue[]): Statement;
-  transaction<T>(fn: (sql: Sql) => Promise<T>): Promise<T>;
-  connection<T>(fn: (sql: Sql) => Promise<T>): Promise<T>;
-  ref(identifier: string): Statement;
-  raw(text: any): Statement;
-  literal(value: any): Statement;
-  join(delimiter: Statement, statements: Statement[]): Statement;
-  array<T extends InterpolatedValue>(values: T[]): Statement;
+export type Sql = ((
+  strings: TemplateStringsArray,
+  ...values: InterpolatedValue[]
+) => SqlStatement) & {
+  transaction: <T>(caller: (trxSql: Sql) => Promise<T>) => Promise<T>;
+  connection: <T>(caller: (sql: Sql) => Promise<T>) => Promise<T>;
+  ref: (identifier: string) => SqlFragment;
+  raw: (text: string) => SqlFragment;
+  literal: (value: any) => SqlFragment;
+  join: (
+    delimiter: SqlFragment,
+    [first, ...statements]: SqlFragment[]
+  ) => SqlFragment;
+  array<T extends InterpolatedValue>(values: T[]): SqlStatement;
   values<T extends Record<string, InterpolatedValue>>(
-    values: T[] | T
-  ): Statement;
-  set<T extends Record<string, InterpolatedValue>>(values: T): Statement;
-  and<T extends Record<string, InterpolatedValue>>(values: T): Statement;
-  or<T extends Record<string, InterpolatedValue>>(values: T): Statement;
-  identifierFromDb: (key: string) => string;
-  identifierToDb: (key: string) => string;
-}
-
-interface StatementState {
-  text: string;
-  values: Value[];
-}
-
-interface Statement extends StatementState {
-  toNative: () => { text: string; values: Value[] };
-  exec: () => Promise<QueryResult>;
-  execRaw: (opt: {
-    areYouSureYouKnowWhatYouAreDoing: true;
-  }) => Promise<QueryResult>;
-  paginate: <T>(options?: { page?: number; per?: number }) => Promise<T[]>;
-  all: <T>() => Promise<T[]>;
-  first: <T>() => Promise<T>;
-  exists: () => Promise<boolean>;
-  compile: () => string;
-}
-
-type Options = {
-  caseMethod: "snake" | "camel" | "constant" | "pascal" | "none";
-  depth: number;
+    values: T | T[]
+  ): SqlStatement;
+  set<T extends Record<string, InterpolatedValue>>(values: T): SqlStatement;
+  and<T extends Record<string, InterpolatedValue>>(values: T): SqlStatement;
+  or<T extends Record<string, InterpolatedValue>>(values: T): SqlStatement;
+  identifierFromDb(key: string): string;
+  identifierToDb(key: string): string;
 };
 
-type AcceptableClient = Client | Pool | PoolClient;
+let debugQuery = Debug("sql:query");
+let debugBinding = Debug("sql:binding");
+let debugTransaction = Debug("sql:transaction");
+let debugError = Debug("sql:error");
 
-function connect(
-  client: AcceptableClient,
-  options: Options = {
-    caseMethod: "snake",
-    depth: 0,
-  }
-) {
-  return makeSql(client, { ...options, depth: 0 });
+type QueryResult<T> = {
+  rows: T[];
+};
+
+export abstract class Client {
+  abstract query<T>(
+    text: string,
+    values: InterpolatedValue[]
+  ): Promise<QueryResult<T> | QueryResult<T>[]>;
 }
 
-function makeSql(
-  client: AcceptableClient,
-  options: Options = {
-    caseMethod: "snake",
-    depth: 0,
-  }
-) {
-  const caseMethodFromDb = caseMethods["camel"];
-  const caseMethodToDb = caseMethods[options.caseMethod];
+export abstract class Pool extends Client {
+  abstract isolate(): Promise<PoolClient>;
+}
 
-  const sanitizeIdentifier = (key: string) =>
+export abstract class PoolClient extends Client {
+  abstract release(): Promise<void>;
+}
+
+export class SqlFragment {
+  text: string;
+  values: InterpolatedValue[];
+
+  constructor(text: string, values: InterpolatedValue[]) {
+    this.text = text;
+    this.values = values;
+  }
+
+  toNative() {
+    let values: any[] = [];
+
+    let text = this.text;
+
+    values.push(...this.values);
+    let segments = text.split(/\?/i);
+    text = segments
+      .map((segment, index) => {
+        if (index + 1 === segments.length) return segment;
+        return `${segment}$${index + 1}`;
+      })
+      .join("")
+      .replace(/(\s)+/g, " ")
+      .trim();
+
+    return {
+      text,
+      values,
+    };
+  }
+  preview() {
+    let { text, values } = this.toNative();
+    return text.replace(/\$\d/g, () => escapeLiteral(String(values.shift())));
+  }
+}
+
+class SqlStatement extends SqlFragment {
+  query: (text: string, values: InterpolatedValue[]) => Promise<any>;
+  options: {
+    caseMethodFromDb: (typeof caseMethods)[keyof typeof caseMethods];
+  };
+  constructor(
+    query: typeof SqlStatement.prototype.query,
+    text: string,
+    values: InterpolatedValue[],
+    options?: typeof SqlStatement.prototype.options
+  ) {
+    super(text, values);
+    this.query = query;
+    this.options = {
+      caseMethodFromDb: caseMethods["camel"],
+      ...options,
+    };
+  }
+  async exec() {
+    let { text, values } = this.toNative();
+
+    debugQuery(text);
+    debugBinding(values);
+    try {
+      let result = await this.query(text, values);
+      return result;
+    } catch (e) {
+      debugError("Query failed: ", this.preview());
+      console.error(e);
+      throw e;
+    }
+  }
+  async all<T>() {
+    let result = await this.exec();
+    if (typeof result.rows === "undefined")
+      throw new Error('Multiple statements in query, use "exec" instead.');
+
+    let items = transformKeys(result.rows, this.options.caseMethodFromDb);
+
+    return items as T[];
+  }
+  async paginate<T>({
+    page = 0,
+    per = 250,
+  }: {
+    page?: number;
+    per?: number;
+  } = {}): Promise<T[]> {
+    page = Math.max(0, page);
+
+    let stmt = new SqlStatement(
+      this.query,
+      `select paginated.* from (${this.text}) paginated limit ? offset ?`,
+      [...this.values, per, page * per],
+      this.options
+    );
+
+    return stmt.all<T>();
+  }
+  async first<T>() {
+    let result = await this.all<T>();
+    let item = result[0];
+    return item as T;
+  }
+  async exists() {
+    let result = await this.all();
+    return result.length > 0;
+  }
+}
+
+let isClientInTransactionWeakMap = new WeakMap<Sql>();
+
+function connect(
+  client: Client,
+  {
+    caseMethod = "snake",
+  }: {
+    caseMethod?: "snake" | "camel" | "none";
+  } = {}
+): Sql {
+  if (!(client instanceof Client)) {
+    throw new Error("Invalid client");
+  }
+
+  let query = (text: string, values: InterpolatedValue[]) => {
+    return client.query(text, values);
+  };
+
+  let caseMethodFromDb = caseMethods["camel"];
+  let caseMethodToDb = caseMethods[caseMethod];
+
+  let sanitizeIdentifier = (key: string) =>
     escapeIdentifier(transformKey(key, caseMethodToDb));
 
-  function Statement(
-    state: StatementState,
-    queryClient: AcceptableClient = client
-  ): Statement {
-    const builder = Object.assign({}, state, {
-      toNative() {
-        let values: any[] = [];
+  function toSqlFragment(value: InterpolatedValue) {
+    if (value instanceof SqlFragment) return value;
 
-        let text = state.text;
+    if (value === undefined)
+      throw new Error("cannot bind undefined value to query");
 
-        values.push(...state.values);
-        const segments = text.split(/\?/i);
-        text = segments
-          .map((segment, index) => {
-            if (index + 1 === segments.length) return segment;
-            return `${segment}$${index + 1}`;
-          })
-          .join("")
-          .replace(/(\s)+/g, " ")
-          .trim();
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      !(value instanceof Date)
+    ) {
+      throw new Error("invalid value in query: " + JSON.stringify(value));
+    }
 
-        return {
-          text,
-          values,
-        };
-      },
-      async exec() {
-        const { text, values } = builder.toNative();
-
-        debugQuery(text);
-        debugBinding(values);
-        try {
-          const result = await queryClient.query({ text, values });
-          return result;
-        } catch (e) {
-          debugError("Query failed: ", this.compile());
-          throw e;
-        }
-      },
-      async execRaw({ areYouSureYouKnowWhatYouAreDoing = false } = {}) {
-        if (!areYouSureYouKnowWhatYouAreDoing)
-          throw new Error(
-            "You must pass {areYouSureYouKnowWhatYouAreDoing: true} to this function to execute it without parameters"
-          );
-
-        const text = this.compile();
-
-        debugQuery(text);
-        try {
-          const result = await queryClient.query({ text });
-          return result;
-        } catch (e) {
-          debugError("Query failed: ", text);
-          throw e;
-        }
-      },
-      async all<T>() {
-        const result = await this.exec();
-        if (typeof result.rows === "undefined")
-          throw new Error('Multiple statements in query, use "exec" instead.');
-
-        const items = transformKeys(result.rows, caseMethodFromDb);
-
-        return items as T[];
-      },
-      async paginate<T>({
-        page = 0,
-        per = 250,
-      }: {
-        page?: number;
-        per?: number;
-      } = {}) {
-        page = Math.max(0, page);
-
-        const paginated = sql`
-          select paginated.*
-          from (${builder}) paginated
-          limit ${per}
-          offset ${page * per}
-        `;
-
-        return paginated.all<T>();
-      },
-      async first<T>() {
-        const result = await this.all<T>();
-        const item = result[0];
-        return item as T;
-      },
-      async exists() {
-        const result = await this.all();
-        return result.length > 0;
-      },
-      compile() {
-        const { text, values } = this.toNative();
-        return text.replace(/\$\d/g, () =>
-          escapeLiteral(String(values.shift()))
-        );
-      },
-    });
-
-    statementWeakSet.add(builder);
-
-    return builder;
+    return new SqlFragment("?", [value]);
   }
 
-  function unboundSql(
+  function sqlTemplateTag(
     strings: TemplateStringsArray,
     ...values: InterpolatedValue[]
-  ): Statement {
-    let state: StatementState = {
+  ) {
+    let state: {
+      text: string;
+      values: InterpolatedValue[];
+    } = {
       text: "",
       values: [],
     };
 
-    const toStatement = (value: InterpolatedValue) => {
-      if (isStatement(value)) {
-        return value;
-      } else {
-        const statement = Statement({
-          text: "?",
-          values: [value],
-        });
-        return statement;
-      }
-    };
-
     for (let index = 0; index < strings.length; index++) {
-      const item = strings[index];
+      let item = strings[index];
       state.text += item;
 
       // last item
@@ -237,100 +228,87 @@ function makeSql(
       if (arg === undefined)
         throw new Error("cannot bind undefined value to query");
 
-      if (typeof arg !== "object" || arg === null || arg instanceof Date)
-        arg = toStatement(arg);
-
-      if (isStatement(arg)) {
-        state.text += arg.text;
-        state.values.push(...arg.values);
-      } else {
-        throw new Error("invalid value in query: " + JSON.stringify(arg));
-      }
+      arg = toSqlFragment(arg);
+      state.text += arg.text;
+      state.values.push(...arg.values);
     }
 
-    return Statement(state);
-  }
-
-  let txId = 0;
-  async function transaction<T>(caller: (trxSql: Sql) => Promise<T>) {
-    const isTopLevel = options.depth === 0;
-    const createNewConnection = isTopLevel && !(client instanceof Client);
-    const trxClient = createNewConnection
-      ? ((await client.connect()) as PoolClient)
-      : client;
-
-    txId++;
-    if (txId > Number.MAX_VALUE) txId = 0;
-
-    const beginStmt = isTopLevel ? "begin" : `savepoint tx${txId}`;
-
-    const rollbackStmt = isTopLevel
-      ? "rollback"
-      : `rollback to savepoint tx${txId}`;
-
-    debugTransaction(beginStmt, `(tx${txId})`);
-    trxClient.query(beginStmt);
-    const sql = makeSql(trxClient, { ...options, depth: options.depth + 1 });
-
-    try {
-      const result = await caller(sql);
-
-      if (isTopLevel) {
-        debugTransaction("commit", `(tx${txId})`);
-        await trxClient.query("commit");
-      }
-
-      return result;
-    } catch (e) {
-      debugTransaction(rollbackStmt, `(tx${txId})`);
-      trxClient.query(rollbackStmt);
-      throw e;
-    } finally {
-      if (createNewConnection) (trxClient as PoolClient).release();
-    }
-  }
-
-  async function connection<T>(caller: (sql: Sql) => Promise<T>) {
-    const isTopLevel = options.depth === 0;
-    const createNewConnection = isTopLevel && !(client instanceof Client);
-    const connectionClient = createNewConnection
-      ? ((await client.connect()) as PoolClient)
-      : client;
-
-    const sql = makeSql(connectionClient, {
-      ...options,
-      depth: options.depth + 1,
+    return new SqlStatement(query, state.text, state.values, {
+      caseMethodFromDb,
     });
+  }
+
+  async function transaction<T>(
+    caller: (trxSql: Sql) => Promise<T>
+  ): Promise<T> {
+    return await connection(async (trxSql) => {
+      let isInSubTransaction = isClientInTransactionWeakMap.has(trxSql);
+      let txId = (isClientInTransactionWeakMap.get(trxSql) || 0) + 1;
+      isClientInTransactionWeakMap.set(trxSql, txId);
+      let txName = `tx_${txId}`;
+      let id = sql.raw(txName);
+      if (!isInSubTransaction) {
+        debugTransaction(`begin ${txName}`);
+        await trxSql`begin`.exec();
+      } else {
+        debugTransaction(`savepoint ${txName}`);
+        await trxSql`savepoint ${id}`.exec();
+      }
+
+      try {
+        let result = await caller(trxSql);
+        if (isInSubTransaction) {
+          debugTransaction(`release ${txName}`);
+          await trxSql`release savepoint ${id}`.exec();
+        } else {
+          debugTransaction(`commit ${txName}`);
+          await trxSql`commit`.exec();
+        }
+        return result;
+      } catch (e) {
+        if (isInSubTransaction) {
+          debugTransaction(`rollback to ${txName}`);
+          await trxSql`rollback to savepoint ${id}`.exec();
+        } else {
+          debugTransaction(`rollback ${txName}`);
+          await trxSql`rollback`.exec();
+        }
+        throw e;
+      } finally {
+        if (!isInSubTransaction) isClientInTransactionWeakMap.delete(trxSql);
+      }
+    });
+  }
+
+  async function connection<T>(caller: (sql: Sql) => Promise<T>): Promise<T> {
+    let createConnection = client instanceof Pool;
+    let connectionClient = createConnection
+      ? await (client as Pool).isolate()
+      : client;
+    let s = createConnection ? connect(connectionClient, { caseMethod }) : sql;
 
     try {
-      const result = await caller(sql);
-      return result;
+      return caller(s);
     } finally {
-      if (createNewConnection) (connectionClient as PoolClient).release();
+      if (connectionClient !== client && connectionClient instanceof PoolClient)
+        connectionClient.release();
     }
   }
 
-  const sql: Sql = Object.assign(unboundSql, {
+  let sql = Object.assign(sqlTemplateTag, {
     transaction,
     connection,
     ref: (identifier: string) =>
-      Statement({
-        text: escapeIdentifier(identifier),
-        values: [],
-      }),
-    raw: (text: string) =>
-      Statement({
-        text,
-        values: [],
-      }),
-    literal: (value: any) => Statement({ text: "?", values: [value] }),
-    join: (delimiter: Statement, [first, ...statements]: Statement[]) =>
+      new SqlFragment(escapeIdentifier(identifier), []),
+    raw: (text: string) => new SqlFragment(text, []),
+    literal: (value: any) => new SqlFragment("?", [value]),
+    join: (delimiter: SqlFragment, [first, ...statements]: SqlFragment[]) =>
       statements.reduce((acc, item) => sql`${acc}${delimiter}${item}`, first),
     array<T extends InterpolatedValue>(values: T[]) {
-      return sql`(${sql.join(
+      return sql`${sql.join(
         sql`, `,
         values.map((v) => sql`${v}`)
-      )})`;
+      )}`;
     },
     values<T extends Record<string, InterpolatedValue>>(values: T[] | T) {
       if (!Array.isArray(values)) values = [values];
@@ -339,7 +317,7 @@ function makeSql(
         throw new Error("values must not be empty");
       }
 
-      const keys = new Set<string>([
+      let keys = new Set<string>([
         ...values.map((row) => Object.keys(row)).flat(),
       ]);
       return sql`(${sql.join(
@@ -369,6 +347,10 @@ function makeSql(
       )}`;
     },
     and<T extends Record<string, InterpolatedValue>>(values: T) {
+      if (Object.keys(values).length === 0) {
+        throw new Error("values must not be empty");
+      }
+
       return sql`(${sql.join(
         sql` and `,
         Object.keys(values).map((v) =>
@@ -379,6 +361,10 @@ function makeSql(
       )})`;
     },
     or<T extends Record<string, InterpolatedValue>>(values: T) {
+      if (Object.keys(values).length === 0) {
+        throw new Error("values must not be empty");
+      }
+
       return sql`(${sql.join(
         sql` or `,
         Object.keys(values).map((v) =>

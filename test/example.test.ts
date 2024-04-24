@@ -1,9 +1,48 @@
-import { beforeAll, afterAll, it, expect } from "vitest";
-import { Pool } from "pg";
-import { connect } from "../src";
+import { Pool as PGPool, PoolClient as PGPoolClient } from "pg";
+import { afterAll, expect, it, beforeAll } from "vitest";
+import { Pool, PoolClient, SqlFragment, connect } from "../src";
 
-const client = new Pool();
-const sql = connect(client);
+let client = new PGPool();
+
+class TestClient extends Pool {
+  pgClient: PGPool;
+  constructor(pgClient: PGPool) {
+    super();
+    this.pgClient = pgClient;
+  }
+  async query<T>(
+    text: string,
+    values: (string | number | boolean | Date | SqlFragment | null)[]
+  ): Promise<{ rows: T[] }> {
+    //@ts-expect-error
+    return await this.pgClient.query(text, values);
+  }
+  async isolate(): Promise<TestIsolatedClient> {
+    let pgClient = await this.pgClient.connect();
+    return new TestIsolatedClient(pgClient);
+  }
+}
+
+class TestIsolatedClient extends PoolClient {
+  pgClient: PGPoolClient;
+  constructor(pgClient: PGPoolClient) {
+    super();
+    this.pgClient = pgClient;
+  }
+  async query<T>(
+    text: string,
+    values: (string | number | boolean | Date | SqlFragment | null)[]
+  ): Promise<{ rows: T[] }> {
+    //@ts-expect-error
+    return await this.pgClient.query(text, values);
+  }
+  async release() {
+    this.pgClient.release();
+  }
+}
+
+let sql = connect(new TestClient(client));
+
 type Sql = typeof sql;
 
 beforeAll(async () => {
@@ -61,7 +100,7 @@ it("supports this example", async () => {
   `.exec();
 
   // modules
-  const context = {
+  let context = {
     userId: 1,
   };
 
@@ -108,7 +147,7 @@ it("supports this example", async () => {
     authorId: number;
     createdAt: Date;
   };
-  const { notesPolicy, createNote } = (() => {
+  let { notesPolicy, createNote } = (() => {
     async function notesPolicy(ctx: Context) {
       return sql`select * from test_example.notes where author_id = ${ctx.userId}`;
     }
@@ -155,7 +194,7 @@ it("supports this example", async () => {
 
   // index.ts
   await sql.transaction(async (sql) => {
-    const noteRows = await sql`
+    let noteRows = await sql`
       select *
       from (${await notesPolicy(context)}) notes
     `.all();
@@ -175,7 +214,7 @@ it("supports this example", async () => {
       },
     ]);
 
-    const newNote = await createNote(sql, context, {
+    let newNote = await createNote(sql, context, {
       body: "Alice's third note",
     });
 

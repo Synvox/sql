@@ -34,7 +34,6 @@
   },
   "dependencies": {
     "debug": "*",
-    "pg": "*",
     "pluralize": "8.0.0"
   },
   "engines": {

@@ -1,9 +1,33 @@
-import { beforeEach, afterAll, it, expect } from "vitest";
-import { Pool } from "pg";
-import { connect, migrate, seed, types } from "../src";
+import { PoolClient as PGPoolClient, Pool as PGPool } from "pg";
+import { afterAll, beforeEach, expect, it } from "vitest";
+import {
+  PoolClient,
+  Client,
+  SqlFragment,
+  connect,
+  migrate,
+  seed,
+  types,
+} from "../src";
 
-const client = new Pool();
-const sql = connect(client);
+let client = new PGPool();
+
+class TestClient extends Client {
+  pgClient: PGPool;
+  constructor(pgClient: PGPool) {
+    super();
+    this.pgClient = pgClient;
+  }
+  async query<T>(
+    text: string,
+    values: (string | number | boolean | Date | SqlFragment | null)[]
+  ): Promise<{ rows: T[] }> {
+    //@ts-expect-error
+    return await this.pgClient.query(text, values);
+  }
+}
+
+let sql = connect(new TestClient(client));
 
 beforeEach(async () => {
   await sql`
@@ -21,11 +45,20 @@ afterAll(async () => {
 });
 
 async function interceptConsole<T>(fn: (messages: string[]) => T) {
-  const messages: string[] = [];
-  const log = global.console.log;
+  let messages: string[] = [];
+  let log = global.console.log;
   global.console.log = (x: string) => messages.push(x);
-  const result = await fn(messages);
+  let result = await fn(messages);
   global.console.log = log;
+  return result;
+}
+
+async function interceptConsoleError<T>(fn: (logs: any[]) => T) {
+  let messages: string[] = [];
+  let log = global.console.error;
+  global.console.error = (x: string) => messages.push(x);
+  let result = await fn(messages);
+  global.console.error = log;
   return result;
 }
 
@@ -48,7 +81,7 @@ it("supports migrations sequentially", async () => {
     },
   ]);
 
-  const users = await sql`select * from test_migrations.users`.all();
+  let users = await sql`select * from test_migrations.users`.all();
 
   expect(users).toMatchObject([
     { firstName: "Alice", lastName: "Smith" },
@@ -56,9 +89,14 @@ it("supports migrations sequentially", async () => {
     { firstName: "Carol", lastName: "Smith" },
   ]);
 
-  await expect(
-    sql`select * from test_migrations.notes`.all()
-  ).rejects.toThrowError();
+  await interceptConsoleError(async (errors) => {
+    await expect(
+      sql`select * from test_migrations.notes`.all()
+    ).rejects.toThrowError();
+    expect(errors[0].message).toBe(
+      `relation "test_migrations.notes" does not exist`
+    );
+  });
 
   await interceptConsole(async (messages) => {
     await migrate(sql, `${__dirname}/migrations/a/2`);
@@ -84,7 +122,7 @@ it("supports migrations sequentially", async () => {
     },
   ]);
 
-  const notes2 = await sql`
+  let notes2 = await sql`
   select * from test_migrations.notes
 `.all();
 

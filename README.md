@@ -6,20 +6,55 @@
 npm i @synvox/sql
 ```
 
-## Basic Example
+## Setting up for your client
+
+`@synvox/sql` does not depend on a specific SQL client. You need to implement the `Pool`, `PoolClient`, and `Client` interfaces to use the library with your drivers of choice.
 
 ```ts
-import { connect } from "@synvox/sql";
-import { Client } from "pg";
+import { connect, Pool, PoolClient, Client } from "@synvox/sql";
+import * as pg from "pg";
 
-const client = new Client(/* ... */); // client from pg
-const sql = connect(client);
+// Implement the Pool and PoolClient interfaces to use pooling
+// connections. If you don't need pooling you can implement the Client.
+class MyPool extends Pool {
+  constructor() {
+    super();
+    this.client = new pg.Pool();
+  }
+  query(query: string, values: any[]) {
+    return this.client.query(query, values);
+  }
+  isolate() {
+    return new MyPoolClient(this.client.connect());
+  }
+}
 
-const user = await sql`
-  select * from users where id = ${1}
-`.first<User>();
+class MyPoolClient extends PoolClient {
+  constructor(client: pg.PoolClient) {
+    super();
+    this.client = client;
+  }
+  query(query: string, values: any[]) {
+    return MyPool.prototype.query.call(this, query, values);
+  }
+  release() {
+    this.client.release();
+  }
+}
 
-// do something with user
+class MyClient extends Client {
+  constructor() {
+    super();
+    this.client = new pg.Client();
+  }
+  query(query: string, values: any[]) {
+    return this.client.query(query, values);
+  }
+}
+
+const sql = connect(new MyPool());
+// or if you don't need pooling
+// const sql = connect(new MyClient());
 ```
 
 ## Executing Queries
@@ -37,7 +72,7 @@ await sql`
 **`all`** for getting the rows returned from a query.
 
 ```ts
-const users = await sql`
+let users = await sql`
   select * from users
 `.all<User>();
 ```
@@ -45,7 +80,7 @@ const users = await sql`
 **`first`** for getting the first row returned from a query.
 
 ```ts
-const user = await sql`
+let user = await sql`
   select * from users
 `.first<User>();
 ```
@@ -53,7 +88,7 @@ const user = await sql`
 **`exists`** returns a boolean if a row exists.
 
 ```ts
-const runJobs = await sql`
+let runJobs = await sql`
   select * from jobs where run_at < now() limit 1
 `.exists();
 ```
@@ -61,7 +96,7 @@ const runJobs = await sql`
 **`paginate`** for getting the rows returned from a query.
 
 ```ts
-const users = await sql`
+let users = await sql`
   select * from users
 `.paginate<User>(page, 100);
 ```
@@ -148,7 +183,7 @@ Arrays are converted to comma separated values:
 await sql`
   select *
   from users
-  where id in ${sql.array([1, 2, 3])}
+  where id in (${sql.array([1, 2, 3])})
 `.exec();
 // Executes:
 // select * from users where id in ($0, $1, $2)
@@ -170,10 +205,12 @@ await sql`
 
 **Raw Values**
 
-Use `sql.raw` for building query from a string. This function does not sanitize any inputs so use with care. You probably want to use `sql.ref` instead.
+Use `sql.raw` for building query from a string. This function does not sanitize any inputs so use with care.
+
+_hint:_ You probably want to use `sql.ref` instead.
 
 ```ts
-const column = "id";
+let column = "id";
 
 if (!(column in attributes)) throw new Error("...");
 
@@ -212,7 +249,7 @@ await sql.transaction(async (sql) => {
 
 ## Dedicated Connection
 
-`sql` uses a pool to run queries. To get a version of `sql` backed by a `pg.PoolClient` use `connection`.
+If you need to get a dedicated connection for a single query you can use `connection`. This will use your `PoolClient` implementation.
 
 ```ts
 await sql.connection(async (sql) => {
@@ -220,24 +257,83 @@ await sql.connection(async (sql) => {
 });
 ```
 
-## Compiling queries to strings
+## Previewing queries
 
-To get a sql string representing a query run `compile`.
+To get a sql string representing a query run `preview`.
 
 ```ts
 // In a migration script
-const migration = sql`
+let migration = sql`
 insert into users ${{ firstName: "Ryan" }}
-`.compile(); // insert into users (first_name) values ('Ryan')
+`.preview(); // insert into users (first_name) values ('Ryan')
 ```
+
+## Migrations
+
+`@synvox/sql` comes with a simple migration system, but it does not come with a CLI. You can use the migration system in your own scripts.
+
+```ts
+// where directory name is the path to your migrations
+await migrate(sql, directoryName);
+```
+
+Migrations are `.ts` files that export an `up` function that accepts a `sql` instance.
+
+```ts
+export async function up(sql) {
+  await sql`
+    create table users (
+      id serial primary key,
+      first_name text not null,
+      last_name text not null
+    )
+  `.exec();
+}
+```
+
+_Note:_ Migrations do not support down migrations.
+
+## Seeds
+
+`@synvox/sql` comes with a simple seed system, but it does not come with a CLI. You can use the seed system in your own scripts.
+
+```ts
+// where directory name is the path to your seeds
+await seed(sql, directoryName);
+```
+
+Seeds are `.ts` files that export an `seed` function that accepts a `sql` instance.
+
+```ts
+export async function seed(sql) {
+  await sql`
+    insert into users ${sql.values({ first_name: "Ryan", last_name: "Allred" })}
+    on conflict do nothing
+  `.exec();
+}
+```
+
+## Types
+
+`@synvox/sql` comes with type generation for your queries.
+
+```ts
+await types(sql, fileNameToWriteTypes, ["schema_name"]);
+```
+
+This will generate a file with types for table rows in the schema. If you don't pass a schema name it will generate types for all schemas.
 
 ## Case Transforms
 
 - `sql` will `camelCase` rows from the database
 - `sql` will `snake_case` identifiers to the database when used in a helper function
 
-To change this behavior pass `{caseMethod: 'snake' | 'camel' | 'constant' | 'pascal' | 'none'}` as the `connect` function's second argument.
+To change this behavior pass `{caseMethod: 'snake' | 'camel' | 'none'}` as the `connect` function's second argument.
 
 ## Debugging
 
 This project uses the excellent `debug` library. Run your app with `DEBUG=sql:*` set to see debug logs.
+
+```
+
+```

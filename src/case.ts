@@ -1,6 +1,6 @@
 type CaseMethod = null | ((word: string, index: number) => string);
 
-export const caseMethods: {
+export let caseMethods: {
   [id: string]: CaseMethod;
 } = {
   none: null,
@@ -9,12 +9,6 @@ export const caseMethods: {
   },
   snake(word, index) {
     return index === 0 ? word : "_" + word;
-  },
-  constant(word, index) {
-    return index === 0 ? word.toUpperCase() : "_" + word.toUpperCase();
-  },
-  pascal(word, _index) {
-    return word[0].toUpperCase() + word.slice(1);
   },
 };
 

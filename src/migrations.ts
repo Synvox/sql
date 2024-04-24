@@ -3,12 +3,12 @@ import path from "path";
 import { singular } from "pluralize";
 import type { Sql } from ".";
 
-const regex = /^\d+_[^.]*\.(js|ts|mjs|cjs)$/;
+let regex = /^\d+_[^.]*\.(js|ts|mjs|cjs)$/;
 
 export async function migrate(sql: Sql, directory: string) {
   await setup(sql);
 
-  const files = Object.fromEntries(
+  let files = Object.fromEntries(
     await Promise.all(
       (await fs.promises.readdir(directory))
         .filter((file) => regex.test(file))
@@ -17,14 +17,14 @@ export async function migrate(sql: Sql, directory: string) {
     )
   ) as Record<string, { up?: (sql: Sql) => Promise<void> }>;
 
-  const count = await sql.transaction(async (sql) => {
+  let count = await sql.transaction(async (sql) => {
     await sql`lock table migrations.migrations`.exec();
 
-    const migrations = await sql`
+    let migrations = await sql`
       select name from migrations.migrations
     `.all<{ name: string }>();
 
-    const missing = migrations.filter((migration) => !files[migration.name]);
+    let missing = migrations.filter((migration) => !files[migration.name]);
     if (missing.length > 0) {
       throw new Error(
         `A migration is missing from the filesystem: ${missing
@@ -33,11 +33,11 @@ export async function migrate(sql: Sql, directory: string) {
       );
     }
 
-    const { maxBatch = 0 } = await sql`
+    let { maxBatch = 0 } = await sql`
       select max(batch) as max_batch from migrations.migrations
     `.first<{ maxBatch?: number }>();
 
-    const toMigrate = Object.fromEntries(
+    let toMigrate = Object.fromEntries(
       Object.entries(files).filter(([file, { up }]) => {
         return (
           typeof up === "function" &&
@@ -46,7 +46,7 @@ export async function migrate(sql: Sql, directory: string) {
       })
     );
 
-    const batch = maxBatch + 1;
+    let batch = maxBatch + 1;
 
     if (Object.keys(toMigrate).length !== 0) {
       await sql`
@@ -59,7 +59,7 @@ export async function migrate(sql: Sql, directory: string) {
         )}
       `.exec();
 
-      for (const [file, { up }] of Object.entries(toMigrate)) {
+      for (let [file, { up }] of Object.entries(toMigrate)) {
         if (typeof up !== "function") {
           throw new Error(
             `expected ${file} to have a export a migrate function`
@@ -79,7 +79,7 @@ export async function migrate(sql: Sql, directory: string) {
 export async function seed(sql: Sql, directory: string) {
   await setup(sql);
 
-  const files = Object.fromEntries(
+  let files = Object.fromEntries(
     await Promise.all(
       (await fs.promises.readdir(directory))
         .filter((file) => regex.test(file))
@@ -88,10 +88,10 @@ export async function seed(sql: Sql, directory: string) {
     )
   ) as Record<string, { seed?: (sql: Sql) => Promise<void> }>;
 
-  const count = await sql.transaction(async (sql) => {
+  let count = await sql.transaction(async (sql) => {
     await sql`lock table migrations.migrations`.exec();
 
-    for (const [file, { seed }] of Object.entries(files)) {
+    for (let [file, { seed }] of Object.entries(files)) {
       if (typeof seed !== "function") {
         throw new Error(`expected ${file} to have a export a seed function`);
       }
@@ -106,7 +106,7 @@ export async function seed(sql: Sql, directory: string) {
 }
 
 export async function types(sql: Sql, outfile: string, schemaNames?: string[]) {
-  const tables = await sql`
+  let tables = await sql`
     select
       table_schema,
       table_name,
@@ -149,13 +149,13 @@ export async function types(sql: Sql, outfile: string, schemaNames?: string[]) {
 
   let types: string[] = [];
 
-  const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-  for (const table of tables) {
-    const name = capitalize(singular(sql.identifierFromDb(table.tableName)));
+  let capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  for (let table of tables) {
+    let name = capitalize(singular(sql.identifierFromDb(table.tableName)));
     let tableType = "";
     tableType += `export type ${name} = {\n`;
-    for (const column of table.columns) {
-      const type = postgresTypesToJSONTsTypes(column.dataType);
+    for (let column of table.columns) {
+      let type = postgresTypesToJSONTsTypes(column.dataType);
       tableType += `  ${sql.identifierFromDb(column.columnName)}: ${type}${
         column.isNullable ? " | null" : ""
       };\n`;

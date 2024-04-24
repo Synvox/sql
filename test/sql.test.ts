@@ -1,9 +1,56 @@
-import { describe, afterEach, beforeEach, afterAll, it, expect } from "vitest";
-import { Pool } from "pg";
-import { connect } from "../src";
+import { PoolClient as PGPoolClient, Pool as PGPool } from "pg";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PoolClient, Pool, SqlFragment, connect } from "../src";
 
-const client = new Pool();
-const sql = connect(client);
+let client = new PGPool();
+
+class TestClient extends Pool {
+  pgClient: PGPool;
+  constructor(pgClient: PGPool) {
+    super();
+    this.pgClient = pgClient;
+  }
+  async query<T>(
+    text: string,
+    values: (string | number | boolean | Date | SqlFragment | null)[]
+  ): Promise<{ rows: T[] }> {
+    //@ts-expect-error
+    return await this.pgClient.query(text, values);
+  }
+  async isolate(): Promise<TestIsolatedClient> {
+    let pgClient = await this.pgClient.connect();
+    return new TestIsolatedClient(pgClient);
+  }
+}
+
+class TestIsolatedClient extends PoolClient {
+  pgClient: PGPoolClient;
+  constructor(pgClient: PGPoolClient) {
+    super();
+    this.pgClient = pgClient;
+  }
+  async query<T>(
+    text: string,
+    values: (string | number | boolean | Date | SqlFragment | null)[]
+  ): Promise<{ rows: T[] }> {
+    //@ts-expect-error
+    return await this.pgClient.query(text, values);
+  }
+  async release() {
+    this.pgClient.release();
+  }
+}
+
+let sql = connect(new TestClient(client));
+
+async function interceptConsoleError<T>(fn: (logs: any[]) => T) {
+  let messages: string[] = [];
+  let log = global.console.error;
+  global.console.error = (x: string) => messages.push(x);
+  let result = await fn(messages);
+  global.console.error = log;
+  return result;
+}
 
 describe("substitutions", () => {
   it("supports basic substitution", () => {
@@ -14,7 +61,7 @@ describe("substitutions", () => {
   });
 
   it("supports dates", () => {
-    const d = new Date();
+    let d = new Date();
     expect(sql`select * from users where created_at=${d}`).toMatchObject({
       text: "select * from users where created_at=?",
       values: [d],
@@ -89,7 +136,7 @@ describe("substitutions", () => {
 
   it("supports arrays", () => {
     expect(
-      sql`select * from users where id in ${sql.array([1, 2, 3])}`
+      sql`select * from users where id in (${sql.array([1, 2, 3])})`
     ).toMatchObject({
       text: "select * from users where id in (?, ?, ?)",
       values: [1, 2, 3],
@@ -209,7 +256,7 @@ describe("substitutions", () => {
         firstName: "Ryan",
         lastName: "Allred",
         createdAt: sql`now()`,
-      })}`.compile()
+      })}`.preview()
     ).toEqual(
       `insert into test.users ("first_name", "last_name", "created_at") values ('Ryan', 'Allred', now())`
     );
@@ -220,7 +267,7 @@ describe("substitutions", () => {
       await sql`insert into test.users ${sql.values({
         firstName: "Ryan",
         lastName: "Allred",
-      })}`.compile()
+      })}`.preview()
     ).toEqual(
       `insert into test.users ("first_name", "last_name") values ('Ryan', 'Allred')`
     );
@@ -261,34 +308,24 @@ describe("connects to postgres", () => {
       })}
     `.exec();
 
-    const result = await sql`select * from test.users`.all();
+    let result = await sql`select * from test.users`.all();
 
     expect(result).toEqual([{ id: 1, firstName: "Ryan", lastName: "Allred" }]);
   });
 
   it("handles failures", async () => {
-    await expect(
-      sql`limit from`.exec()
-    ).rejects.toThrowErrorMatchingInlineSnapshot(
-      `[error: syntax error at or near "limit"]`
-    );
-
-    await expect(
-      sql`limit from`.execRaw({
-        areYouSureYouKnowWhatYouAreDoing: true,
-      })
-    ).rejects.toThrowErrorMatchingInlineSnapshot(
-      `[error: syntax error at or near "limit"]`
-    );
-
-    await expect(
-      sql`limit from`.execRaw({
-        //@ts-expect-error
-        areYouSureYouKnowWhatYouAreDoing: false,
-      })
-    ).rejects.toThrowErrorMatchingInlineSnapshot(
-      `[Error: You must pass {areYouSureYouKnowWhatYouAreDoing: true} to this function to execute it without parameters]`
-    );
+    await interceptConsoleError(async (errors) => {
+      await expect(
+        sql`limit from`.exec()
+      ).rejects.toThrowErrorMatchingInlineSnapshot(
+        `[error: syntax error at or near "limit"]`
+      );
+      expect(errors).toMatchInlineSnapshot(`
+        [
+          [error: syntax error at or near "limit"],
+        ]
+      `);
+    });
 
     await expect(
       sql`select 2+2; select 4+4`.all()
@@ -320,7 +357,7 @@ describe("connects to postgres", () => {
       })}
     `.exec();
 
-    const result = await sql`select * from test.users`.first();
+    let result = await sql`select * from test.users`.first();
 
     expect(result).toEqual({ id: 1, firstName: "Ryan", lastName: "Allred" });
 
@@ -345,7 +382,7 @@ describe("connects to postgres", () => {
       })}
     `.exec();
 
-    const result = await sql`select * from test.users`.all();
+    let result = await sql`select * from test.users`.all();
 
     expect(result).toEqual([{ id: 1, firstName: "Ryan", lastName: "Allred" }]);
 
@@ -368,7 +405,7 @@ describe("connects to postgres", () => {
       })}
     `.exec();
 
-    const result = await sql`select * from test.logs`.all();
+    let result = await sql`select * from test.logs`.all();
 
     expect(result).toEqual([{ data: { thing: 0 }, id: 1 }]);
   });
@@ -387,7 +424,7 @@ describe("connects to postgres", () => {
       })}
     `.exec();
 
-    const result = await sql`select * from test.logs`.all();
+    let result = await sql`select * from test.logs`.all();
 
     expect(result).toEqual([{ data: ["thing1", "thing2"], id: 1 }]);
   });
@@ -411,11 +448,11 @@ describe("connects to postgres", () => {
       ])}
     `.exec();
 
-    const stmt = sql`select * from test.logs where data = ${sql.literal([
+    let stmt = sql`select * from test.logs where data = ${sql.literal([
       "thing1",
       "thing2",
     ])}`;
-    const result = await stmt.all();
+    let result = await stmt.all();
 
     expect(stmt.toNative()).toMatchObject({
       text: "select * from test.logs where data = $1",
@@ -440,7 +477,7 @@ describe("connects to postgres", () => {
       })}
     `.exec();
 
-    const result = await sql`select * from test.logs`.first();
+    let result = await sql`select * from test.logs`.first();
 
     expect(result).toMatchObject({
       date: new Date("2020-01-01T00:00:00.000Z"),
@@ -476,7 +513,7 @@ describe("connects to postgres", () => {
       commit;
     `.exec();
 
-    const rows = await sql`select * from test.logs`.all();
+    let rows = await sql`select * from test.logs`.all();
 
     expect(rows).toMatchInlineSnapshot(`
       [
@@ -491,18 +528,16 @@ describe("connects to postgres", () => {
       ]
     `);
 
-    const stmt = sql`
-      select * from test.logs where id=${2};
-      select * from test.logs where id=${3};
+    let stmt = sql`
+      select * from test.logs where id = ${sql.raw("2")};
+      select * from test.logs where id = ${sql.raw("3")};
     `;
 
-    expect(stmt.compile()).toMatchInlineSnapshot(
-      `"select * from test.logs where id='2'; select * from test.logs where id='3';"`
+    expect(stmt.preview()).toMatchInlineSnapshot(
+      `"select * from test.logs where id = 2; select * from test.logs where id = 3;"`
     );
 
-    const results = await stmt.execRaw({
-      areYouSureYouKnowWhatYouAreDoing: true,
-    });
+    let results = await stmt.exec();
 
     expect((results as any).map((r: any) => r.rows)).toMatchInlineSnapshot(`
       [
@@ -518,219 +553,6 @@ describe("connects to postgres", () => {
             "id": 3,
           },
         ],
-      ]
-    `);
-  });
-
-  it("supports nesting", async () => {
-    await sql`
-      create table test.users (
-        id serial primary key,
-        name text not null
-      );
-    `.exec();
-
-    await sql`
-      create table test.posts (
-        id serial primary key,
-        name text not null
-      );
-    `.exec();
-
-    await sql`
-      create table test.post_likes (
-        id serial primary key,
-        user_id int not null references test.users(id) on delete cascade,
-        post_id int not null references test.posts(id) on delete cascade
-      );
-    `.exec();
-
-    const user = (await sql`insert into test.users ${sql.values({
-      name: "Ryan",
-    })} returning *`.first<{ id: number; name: string }>())!;
-
-    const post1 = (await sql`insert into test.posts ${sql.values({
-      name: "My Post",
-    })} returning *`.first<{ id: number; name: string }>())!;
-    await sql`insert into test.post_likes ${sql.values({
-      userId: user.id,
-      postId: post1.id,
-    })} returning *`.first();
-
-    const post2 = (await sql`insert into test.posts ${sql.values({
-      name: "My Post",
-    })} returning *`.first<{ id: number; name: string }>())!;
-    await sql`insert into test.post_likes ${sql.values({
-      userId: user.id,
-      postId: post2.id,
-    })} returning *`.first();
-
-    const result = await sql`
-      select
-        users.*,
-        ${sql`
-          select
-            post_likes.*,
-            ${sql`
-              select posts.*
-              from test.posts
-              where posts.id = post_likes.post_id
-              limit 1
-            `.nestFirst()} as post
-          from test.post_likes
-          where post_likes.user_id = users.id
-        `.nestAll()} as liked_posts
-      from test.users
-      where users.id = ${user.id}
-    `.first();
-
-    expect(result).toMatchInlineSnapshot(`
-      {
-        "id": 1,
-        "likedPosts": [
-          {
-            "id": 1,
-            "post": {
-              "id": 1,
-              "name": "My Post",
-            },
-            "postId": 1,
-            "userId": 1,
-          },
-          {
-            "id": 2,
-            "post": {
-              "id": 2,
-              "name": "My Post",
-            },
-            "postId": 2,
-            "userId": 1,
-          },
-        ],
-        "name": "Ryan",
-      }
-    `);
-  });
-
-  it("supports nesting with dependencies", async () => {
-    await sql`
-      create table test.users (
-        id serial primary key,
-        name text not null
-      );
-    `.exec();
-
-    await sql`
-      create table test.posts (
-        id serial primary key,
-        name text not null
-      );
-    `.exec();
-
-    await sql`
-      create table test.post_likes (
-        id serial primary key,
-        user_id int not null references test.users(id) on delete cascade,
-        post_id int not null references test.posts(id) on delete cascade
-      );
-    `.exec();
-
-    const user = (await sql`insert into test.users ${sql.values({
-      name: "Ryan",
-    })} returning *`.first<{ id: number; name: string }>())!;
-
-    const post1 = (await sql`insert into test.posts ${sql.values({
-      name: "My Post",
-    })} returning *`.first<{ id: number; name: string }>())!;
-
-    await sql`insert into test.post_likes ${sql.values({
-      userId: user.id,
-      postId: post1.id,
-    })}`.exec();
-
-    const post2 = (await sql`insert into test.posts ${sql.values({
-      name: "My Post",
-    })} returning *`.first<{ id: number; name: string }>())!;
-
-    await sql`insert into test.post_likes ${sql.values({
-      userId: user.id,
-      postId: post2.id,
-    })}`.exec();
-
-    async function users() {
-      return sql`
-        select users.*
-        from test.users
-        where users.id = ${user.id}
-      `;
-    }
-
-    async function postLikes() {
-      return sql`
-        select post_likes.* from test.post_likes
-        where post_likes.user_id = ${user.id}
-      `;
-    }
-
-    async function posts() {
-      return sql`
-        select posts.* from test.posts
-        where exists (
-          select 1
-          from (${await postLikes()}) post_likes
-          where post_likes.post_id = posts.id
-        )
-      `;
-    }
-
-    const stmt = sql`
-      select
-        users.*,
-        ${sql`
-          select
-            post_likes.*,
-            ${sql`
-              select posts.*
-              from (${await posts()}) posts
-              where posts.id = post_likes.post_id
-            `.nestFirst()} as post
-          from (${await postLikes()}) post_likes
-          where post_likes.user_id = users.id
-        `.nestAll()} as post_likes
-      from (${await users()}) users
-      where users.id = ${user.id}
-    `;
-
-    expect(stmt.compile()).toMatchInlineSnapshot(
-      `"select users.*, coalesce((select jsonb_agg(subquery) as nested from ( select post_likes.*, (select row_to_json(subquery) as nested from ( select posts.* from ( select posts.* from test.posts where exists ( select 1 from ( select post_likes.* from test.post_likes where post_likes.user_id = '1' ) post_likes where post_likes.post_id = posts.id ) ) posts where posts.id = post_likes.post_id ) subquery limit 1) as post from ( select post_likes.* from test.post_likes where post_likes.user_id = '1' ) post_likes where post_likes.user_id = users.id ) subquery), '[]'::jsonb) as post_likes from ( select users.* from test.users where users.id = '1' ) users where users.id = '1'"`
-    );
-    const result = await stmt.paginate();
-    expect(result).toMatchInlineSnapshot(`
-      [
-        {
-          "id": 1,
-          "name": "Ryan",
-          "postLikes": [
-            {
-              "id": 1,
-              "post": {
-                "id": 1,
-                "name": "My Post",
-              },
-              "postId": 1,
-              "userId": 1,
-            },
-            {
-              "id": 2,
-              "post": {
-                "id": 2,
-                "name": "My Post",
-              },
-              "postId": 2,
-              "userId": 1,
-            },
-          ],
-        },
       ]
     `);
   });
@@ -760,11 +582,11 @@ describe("connects to postgres", () => {
 
     type User = { id: number; name: string };
     type Post = { id: number; name: string };
-    const user = (await sql`insert into test.users ${sql.values({
+    let user = (await sql`insert into test.users ${sql.values({
       name: "Ryan",
     })} returning *`.first<User>())!;
 
-    const post1 = (await sql`insert into test.posts ${sql.values({
+    let post1 = (await sql`insert into test.posts ${sql.values({
       name: "My Post",
     })} returning *`.first<Post>())!;
     await sql`insert into test.post_likes ${sql.values({
@@ -772,7 +594,7 @@ describe("connects to postgres", () => {
       postId: post1.id,
     })} returning *`.first();
 
-    const post2 = (await sql`insert into test.posts ${sql.values({
+    let post2 = (await sql`insert into test.posts ${sql.values({
       name: "My Post",
     })} returning *`.first<Post>())!;
     await sql`insert into test.post_likes ${sql.values({
@@ -782,7 +604,7 @@ describe("connects to postgres", () => {
 
     async function posts() {
       // if this needed to come from somewhere
-      const u =
+      let u =
         await sql`select * from test.users where id = ${user.id}`.first<User>();
 
       return sql`
@@ -797,13 +619,13 @@ describe("connects to postgres", () => {
       `;
     }
 
-    const stmt = sql`
+    let stmt = sql`
       select *
       from (${await posts()}) posts
       where id = ${post1.id}
     `;
 
-    const result = await stmt.first<Post>();
+    let result = await stmt.first<Post>();
 
     expect(result).toMatchInlineSnapshot(`
       {
@@ -842,7 +664,7 @@ describe("connects to postgres", () => {
             })}
           `.exec();
 
-          const result = await sql`select * from test.users`.all();
+          let result = await sql`select * from test.users`.all();
 
           expect(result).toEqual([
             { id: 1, firstName: "Ryan", lastName: "Allred" },
@@ -850,7 +672,7 @@ describe("connects to postgres", () => {
         });
       } catch (e) {}
 
-      const result = await sql`select * from test.users`.all();
+      let result = await sql`select * from test.users`.all();
 
       expect(result).toEqual([
         { id: 1, firstName: "Ryan", lastName: "Allred" },
@@ -875,7 +697,7 @@ describe("connects to postgres", () => {
             })}
           `.exec();
 
-          const result = await sql`select * from test.users`.all();
+          let result = await sql`select * from test.users`.all();
 
           expect(result).toEqual([
             { id: 1, firstName: "Ryan", lastName: "Allred" },
@@ -885,7 +707,7 @@ describe("connects to postgres", () => {
         });
       } catch (e) {}
 
-      const result = await sql`select * from test.users`.all();
+      let result = await sql`select * from test.users`.all();
 
       expect(result).toEqual([]);
     });
@@ -899,46 +721,47 @@ describe("connects to postgres", () => {
         );
       `.exec();
 
-      await sql.transaction(async (sql) => {
-        await sql`
-          insert into test.users ${sql.values({
-            firstName: "Ryan",
-            lastName: "Allred",
-          })}
-        `.exec();
+      try {
+        await sql.transaction(async (sql) => {
+          await sql`
+            insert into test.users ${sql.values({
+              firstName: "Ryan",
+              lastName: "Allred",
+            })}
+          `.exec();
 
-        try {
-          await sql.transaction(async (sql) => {
-            await sql`
-              insert into test.users ${sql.values({
-                firstName: "Ryan",
-                lastName: "Allred",
-              })}
-            `.exec();
+          try {
+            await sql.transaction(async (sql) => {
+              await sql`
+                insert into test.users ${sql.values({
+                  firstName: "Ryan",
+                  lastName: "Allred",
+                })}
+              `.exec();
 
-            const result = await sql`select * from test.users`.all();
+              let result = await sql`select * from test.users`.all();
 
-            expect(result).toEqual([
-              { id: 1, firstName: "Ryan", lastName: "Allred" },
-              { id: 2, firstName: "Ryan", lastName: "Allred" },
-            ]);
+              expect(result).toEqual([
+                { id: 1, firstName: "Ryan", lastName: "Allred" },
+                { id: 2, firstName: "Ryan", lastName: "Allred" },
+              ]);
 
-            throw new Error("rollback");
-          });
-        } catch (e) {}
+              throw new Error("rollback");
+            });
+          } catch (e) {}
 
-        const result = await sql`select * from test.users`.all();
+          let result = await sql`select * from test.users`.all();
 
-        expect(result).toEqual([
-          { id: 1, firstName: "Ryan", lastName: "Allred" },
-        ]);
-      });
+          expect(result).toEqual([
+            { id: 1, firstName: "Ryan", lastName: "Allred" },
+          ]);
+          throw new Error("rollback");
+        });
+      } catch (e) {}
 
-      const result = await sql`select * from test.users`.all();
+      let result = await sql`select * from test.users`.all();
 
-      expect(result).toEqual([
-        { id: 1, firstName: "Ryan", lastName: "Allred" },
-      ]);
+      expect(result).toEqual([]);
     });
   });
 });

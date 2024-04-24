@@ -1,7 +1,7 @@
 import type { Sql } from "../../src";
 
 export async function seed(sql: Sql) {
-  const users = await sql`
+  let users = await sql`
     insert into test_migrations.users
     ${sql.values(
       ["Alice", "Bob", "Carol"].map((name) => ({
