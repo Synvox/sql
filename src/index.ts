@@ -155,9 +155,27 @@ class SqlStatement extends SqlFragment {
     let item = result[0];
     return item as T;
   }
+  async count() {
+    const stmt = new SqlStatement(
+      this.query,
+      `select count(*) from (${this.text}) count`,
+      this.values,
+      this.options
+    );
+
+    const result = await stmt.first<{ count: number }>();
+    return Number(result.count);
+  }
   async exists() {
-    let result = await this.all();
-    return result.length > 0;
+    const stmt = new SqlStatement(
+      this.query,
+      `select exists(${this.text})`,
+      this.values,
+      this.options
+    );
+
+    const result = await stmt.first<{ exists: boolean }>();
+    return result.exists;
   }
 }
 

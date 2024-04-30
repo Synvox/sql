@@ -366,6 +366,49 @@ describe("connects to postgres", () => {
     );
   });
 
+  it("supports count", async () => {
+    await sql`
+      create table test.users (
+        id serial primary key,
+        first_name text not null,
+        last_name text not null
+      );
+    `.exec();
+
+    expect(await sql`select * from test.users`.count()).toEqual(0);
+
+    await sql`
+      insert into test.users ${sql.values({
+        firstName: "Ryan",
+        lastName: "Allred",
+      })}
+    `.exec();
+
+    expect(await sql`select * from test.users`.count()).toEqual(1);
+  });
+
+  it("supports exists", async () => {
+    await sql`
+      create table test.users (
+        id serial primary key,
+        first_name text not null,
+        last_name text not null
+      );
+    `.exec();
+
+    await sql`
+      insert into test.users ${sql.values({
+        firstName: "Ryan",
+        lastName: "Allred",
+      })}
+    `.exec();
+
+    expect(await sql`select * from test.users`.exists()).toEqual(true);
+    expect(
+      await sql`select * from test.users where id=${123}`.exists()
+    ).toEqual(false);
+  });
+
   it("supports all", async () => {
     await sql`
       create table test.users (
