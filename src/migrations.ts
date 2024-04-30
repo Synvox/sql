@@ -164,7 +164,12 @@ export async function types(sql: Sql, outfile: string, schemaNames?: string[]) {
     types.push(tableType);
   }
 
-  await fs.promises.writeFile(outfile, types.join("\n\n") + "\n", "utf8");
+  let oldContent = await fs.promises.readFile(outfile, "utf8").catch(() => "");
+  let newContent = types.join("\n\n") + "\n";
+
+  if (oldContent !== newContent) {
+    await fs.promises.writeFile(outfile, newContent, "utf8");
+  }
 }
 
 async function setup(sql: Sql) {
