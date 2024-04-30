@@ -105,7 +105,16 @@ export async function seed(sql: Sql, directory: string) {
   console.log(`Seeded ${count} file${count === 1 ? "" : "s"}`);
 }
 
-export async function types(sql: Sql, outfile: string, schemaNames?: string[]) {
+export type TypeOptions = {
+  typeMap?: Record<string, string>;
+};
+
+export async function types(
+  sql: Sql,
+  outfile: string,
+  schemaNames?: string[],
+  options?: TypeOptions
+) {
   let tables = await sql`
     select
       table_schema,
@@ -155,7 +164,7 @@ export async function types(sql: Sql, outfile: string, schemaNames?: string[]) {
     let tableType = "";
     tableType += `export type ${name} = {\n`;
     for (let column of table.columns) {
-      let type = postgresTypesToJSONTsTypes(column.dataType);
+      let type = postgresTypesToJSONTsTypes(column.dataType, options);
       tableType += `  ${sql.identifierFromDb(column.columnName)}: ${type}${
         column.isNullable ? " | null" : ""
       };\n`;
@@ -187,7 +196,12 @@ async function setup(sql: Sql) {
   return { sql };
 }
 
-function postgresTypesToJSONTsTypes(type: string) {
+function postgresTypesToJSONTsTypes(type: string, options: TypeOptions = {}) {
+  let { typeMap = {} } = options;
+  if (typeMap[type]) {
+    return typeMap[type];
+  }
+
   switch (type) {
     case "timestamp with time zone":
     case "timestamp without time zone":

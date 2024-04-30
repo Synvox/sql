@@ -1,3 +1,4 @@
+import fs from "fs";
 import { PoolClient as PGPoolClient, Pool as PGPool } from "pg";
 import { afterAll, beforeEach, expect, it } from "vitest";
 import {
@@ -226,31 +227,31 @@ it("supports seeds", async () => {
   });
 
   expect(await sql`select * from test_migrations.users`.all()).toMatchObject([
-    { id: 1, firstName: "Alice", lastName: "Smith" },
-    { id: 2, firstName: "Bob", lastName: "Smith" },
-    { id: 3, firstName: "Carol", lastName: "Smith" },
+    { id: "1", firstName: "Alice", lastName: "Smith" },
+    { id: "2", firstName: "Bob", lastName: "Smith" },
+    { id: "3", firstName: "Carol", lastName: "Smith" },
   ]);
 
   expect(await sql`select * from test_migrations.notes`.all()).toMatchObject([
     {
-      id: 1,
+      id: "1",
       body: "Alice's first note",
-      authorId: 1,
+      authorId: "1",
     },
     {
-      id: 2,
+      id: "2",
       body: "Alice's second note",
-      authorId: 1,
+      authorId: "1",
     },
     {
-      id: 3,
+      id: "3",
       body: "Bob's first note",
-      authorId: 2,
+      authorId: "2",
     },
     {
-      id: 4,
+      id: "4",
       body: "Carol's first note",
-      authorId: 3,
+      authorId: "3",
     },
   ]);
 
@@ -262,54 +263,54 @@ it("supports seeds", async () => {
   });
 
   expect(await sql`select * from test_migrations.users`.all()).toMatchObject([
-    { id: 1, firstName: "Alice", lastName: "Smith" },
-    { id: 2, firstName: "Bob", lastName: "Smith" },
-    { id: 3, firstName: "Carol", lastName: "Smith" },
-    { id: 4, firstName: "Alice", lastName: "Smith" },
-    { id: 5, firstName: "Bob", lastName: "Smith" },
-    { id: 6, firstName: "Carol", lastName: "Smith" },
+    { id: "1", firstName: "Alice", lastName: "Smith" },
+    { id: "2", firstName: "Bob", lastName: "Smith" },
+    { id: "3", firstName: "Carol", lastName: "Smith" },
+    { id: "4", firstName: "Alice", lastName: "Smith" },
+    { id: "5", firstName: "Bob", lastName: "Smith" },
+    { id: "6", firstName: "Carol", lastName: "Smith" },
   ]);
 
   expect(await sql`select * from test_migrations.notes`.all()).toMatchObject([
     {
-      id: 1,
+      id: "1",
       body: "Alice's first note",
-      authorId: 1,
+      authorId: "1",
     },
     {
-      id: 2,
+      id: "2",
       body: "Alice's second note",
-      authorId: 1,
+      authorId: "1",
     },
     {
-      id: 3,
+      id: "3",
       body: "Bob's first note",
-      authorId: 2,
+      authorId: "2",
     },
     {
-      id: 4,
+      id: "4",
       body: "Carol's first note",
-      authorId: 3,
+      authorId: "3",
     },
     {
-      id: 5,
+      id: "5",
       body: "Alice's first note",
-      authorId: 4,
+      authorId: "4",
     },
     {
-      id: 6,
+      id: "6",
       body: "Alice's second note",
-      authorId: 4,
+      authorId: "4",
     },
     {
-      id: 7,
+      id: "7",
       body: "Bob's first note",
-      authorId: 5,
+      authorId: "5",
     },
     {
-      id: 8,
+      id: "8",
       body: "Carol's first note",
-      authorId: 6,
+      authorId: "6",
     },
   ]);
 });
@@ -326,4 +327,44 @@ it("supports outputting types", async () => {
   });
 
   await types(sql, `${__dirname}/types/types.ts`, ["test_migrations"]);
+
+  expect(await fs.promises.readFile(`${__dirname}/types/types.ts`, "utf8"))
+    .toMatchInlineSnapshot(`
+    "export type Note = {
+      id: string;
+      body: string;
+      authorId: string;
+      createdAt: Date;
+    }
+
+    export type User = {
+      id: string;
+      firstName: string;
+      lastName: string;
+    }
+    "
+  `);
+
+  await types(sql, `${__dirname}/types/types.ts`, ["test_migrations"], {
+    typeMap: {
+      bigint: "number",
+    },
+  });
+
+  expect(await fs.promises.readFile(`${__dirname}/types/types.ts`, "utf8"))
+    .toMatchInlineSnapshot(`
+      "export type Note = {
+        id: number;
+        body: string;
+        authorId: number;
+        createdAt: Date;
+      }
+
+      export type User = {
+        id: number;
+        firstName: string;
+        lastName: string;
+      }
+      "
+    `);
 });
