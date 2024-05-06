@@ -41,7 +41,9 @@ class TestIsolatedClient extends PoolClient {
   }
 }
 
-let sql = connect(new TestClient(client));
+let sql = connect(new TestClient(client), {
+  deadlockRetryCount: 2,
+});
 
 async function interceptConsoleError<T>(fn: (logs: any[]) => T) {
   let messages: string[] = [];
@@ -805,6 +807,169 @@ describe("connects to postgres", () => {
       let result = await sql`select * from test.users`.all();
 
       expect(result).toEqual([]);
+    });
+
+    it("deadlocks as expected", async () => {
+      let sql1 = connect(new TestClient(client), {});
+      let sql2 = connect(new TestClient(client), {});
+
+      await sql1`
+          drop table if exists test.deadlock;
+        `.exec();
+
+      await sql1`
+          create table test.deadlock (
+            id text primary key,
+            data text not null
+          );
+        `.exec();
+
+      await sql1`
+          insert into test.deadlock ${sql1.values([
+            { id: "1", data: "(unset)" },
+            { id: "2", data: "(unset)" },
+          ])}
+        `.exec();
+
+      function withResolvers<T>() {
+        type Resolve = (value: T) => void;
+        type Reject = (reason: any) => void;
+        let a: Resolve | null, b: Reject | null;
+        let c = new Promise<T>(function (resolve, reject) {
+          a = resolve;
+          b = reject;
+        });
+
+        return { resolve: a!, reject: b!, promise: c };
+      }
+
+      const { promise: promise1Start, resolve: resolve1Start } =
+        withResolvers<void>();
+      const { promise: promise2Start, resolve: resolve2Start } =
+        withResolvers<void>();
+      const {
+        promise: promise1End,
+        resolve: resolve1End,
+        reject: reject1,
+      } = withResolvers<void>();
+      const {
+        promise: promise2End,
+        resolve: resolve2End,
+        reject: reject2,
+      } = withResolvers<void>();
+
+      let tsql1: typeof sql;
+      let tsql2: typeof sql;
+
+      let callCount1 = 0;
+      const promise1 = sql1.impureTransaction(async (sql) => {
+        callCount1++;
+        tsql1 = sql;
+        resolve1Start();
+        await promise1End;
+        return sql`select * from test.deadlock order by id asc`.all();
+      });
+
+      let callCount2 = 0;
+      const promise2 = sql2.impureTransaction(async (sql) => {
+        callCount2++;
+        tsql2 = sql;
+        resolve2Start();
+        await promise2End;
+        return sql`select * from test.deadlock order by id asc`.all();
+      });
+
+      await Promise.all([promise1Start, promise2Start]);
+
+      await interceptConsoleError(async (errors) => {
+        await tsql1!`
+          select * from test.deadlock where id = '1' for update
+        `
+          .exec()
+          .catch(reject1);
+
+        await tsql2!`
+          select * from test.deadlock where id = '2' for update
+        `
+          .exec()
+          .catch(reject2);
+
+        await Promise.all([
+          tsql1!`
+            update test.deadlock set data = 'second row' where id = '2'
+          `
+            .exec()
+            .catch(reject1),
+          tsql2!`
+          update test.deadlock set data = 'first row' where id = '1'
+        `
+            .exec()
+            .catch(reject2),
+        ]);
+
+        resolve1End();
+        resolve2End();
+
+        expect(errors).toMatchInlineSnapshot(`
+          [
+            [error: deadlock detected],
+          ]
+        `);
+      });
+
+      expect(callCount1).toBe(1);
+      expect(callCount2).toBe(1);
+
+      // make sure we got a deadlock with the expected error name
+      let [p1, p2]: any[] = await Promise.allSettled([promise1, promise2]);
+      if (p1.status === "rejected") {
+        expect(p2.value).toMatchObject([
+          {
+            id: "1",
+            data: "first row",
+          },
+          {
+            id: "2",
+            data: "(unset)", // unset because the transaction was rolled back
+          },
+        ]);
+
+        expect(p1.reason.message).toMatch("deadlock detected");
+      } else {
+        expect(p1.value).toMatchObject([
+          {
+            id: "1",
+            data: "(unset)", // unset because the transaction was rolled back
+          },
+          {
+            id: "2",
+            data: "second row",
+          },
+        ]);
+
+        expect(p2.reason.message).toMatch("deadlock detected");
+      }
+    });
+
+    it("retries when using transaction on deadlocks", async () => {
+      let runs = 0;
+      await expect(() =>
+        sql.transaction(() => {
+          runs++;
+          // make sure this is the same name as in the previous test
+          throw new Error("deadlock detected");
+        })
+      ).rejects.toThrowError("deadlock detected");
+      expect(runs).toBe(2);
+
+      runs = 0;
+      await expect(() =>
+        sql.transaction(() => {
+          runs++;
+          throw new Error("unrelated error");
+        })
+      ).rejects.toThrowError("unrelated error");
+      expect(runs).toBe(1);
     });
   });
 });

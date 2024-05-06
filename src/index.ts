@@ -11,7 +11,17 @@ export type Sql = ((
   strings: TemplateStringsArray,
   ...values: InterpolatedValue[]
 ) => SqlStatement) & {
+  /**
+   * Transactions that only affect the database. These will be retried on deadlock.
+   * Otherwise use `impureTransaction` for transactions with side effects.
+   */
   transaction: <T>(caller: (trxSql: Sql) => Promise<T>) => Promise<T>;
+  /**
+   * Transactions that have side effects outside the database.
+   * Otherwise use `transaction` for database transactions. These
+   * will be retried on deadlock.
+   */
+  impureTransaction: <T>(caller: (trxSql: Sql) => Promise<T>) => Promise<T>;
   connection: <T>(caller: (sql: Sql) => Promise<T>) => Promise<T>;
   ref: (identifier: string) => SqlFragment;
   raw: (text: string) => SqlFragment;
@@ -185,8 +195,10 @@ function connect(
   client: Client,
   {
     caseMethod = "snake",
+    deadlockRetryCount = 5,
   }: {
     caseMethod?: "snake" | "camel" | "none";
+    deadlockRetryCount?: number;
   } = {}
 ): Sql {
   if (!(client instanceof Client)) {
@@ -256,7 +268,38 @@ function connect(
     });
   }
 
-  async function transaction<T>(
+  async function transaction<T>(caller: (trxSql: Sql) => Promise<T>) {
+    return transactionInner(caller);
+  }
+
+  async function transactionInner<T>(
+    caller: (trxSql: Sql) => Promise<T>,
+    retryCount = deadlockRetryCount,
+    attemptNumber = 1
+  ): Promise<T> {
+    if (retryCount <= 0) {
+      throw new Error("transaction failed due to deadlock");
+    }
+
+    try {
+      return await impureTransaction(caller);
+    } catch (e) {
+      if (e instanceof Error && e.message === "deadlock detected") {
+        debugTransaction(`retrying transaction due to deadlock`);
+        retryCount--;
+        if (retryCount === 0) {
+          throw e;
+        }
+
+        let delay = attemptNumber * 100;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return transactionInner(caller, retryCount, attemptNumber);
+      }
+      throw e;
+    }
+  }
+
+  async function impureTransaction<T>(
     caller: (trxSql: Sql) => Promise<T>
   ): Promise<T> {
     return await connection(async (trxSql) => {
@@ -315,6 +358,7 @@ function connect(
 
   let sql = Object.assign(sqlTemplateTag, {
     transaction,
+    impureTransaction,
     connection,
     ref: (identifier: string) =>
       new SqlFragment(escapeIdentifier(identifier), []),
