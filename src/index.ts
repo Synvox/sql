@@ -97,7 +97,7 @@ export class SqlFragment {
   }
   preview() {
     let { text, values } = this.toNative();
-    return text.replace(/\$\d/g, () => escapeLiteral(String(values.shift())));
+    return text.replace(/\$\d+/g, () => escapeLiteral(String(values.shift())));
   }
 }
 

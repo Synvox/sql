@@ -66,7 +66,12 @@ export async function migrate(sql: Sql, directory: string) {
           );
         }
 
-        await up(sql);
+        try {
+          await up(sql);
+        } catch (e) {
+          console.error(`Error migrating ${file}`);
+          throw e;
+        }
       }
     }
 
