@@ -57,7 +57,7 @@ async function interceptConsoleError<T>(fn: (logs: any[]) => T) {
 describe("substitutions", () => {
   it("supports basic substitution", () => {
     expect(sql`select * from users where id=${1}`).toMatchObject({
-      text: "select * from users where id=?",
+      text: "select * from users where id=❓",
       values: [1],
     });
   });
@@ -65,13 +65,15 @@ describe("substitutions", () => {
   it("supports many substitutions in .preview", () => {
     expect(
       sql`select * from users where id in (${sql.array(Array.from({ length: 25 }).map((_, i) => i))})`.preview()
-    ).toMatchInlineSnapshot(`"select * from users where id in ('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24')"`);
+    ).toMatchInlineSnapshot(
+      `"select * from users where id in ('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24')"`
+    );
   });
 
   it("supports dates", () => {
     let d = new Date();
     expect(sql`select * from users where created_at=${d}`).toMatchObject({
-      text: "select * from users where created_at=?",
+      text: "select * from users where created_at=❓",
       values: [d],
     });
   });
@@ -80,7 +82,7 @@ describe("substitutions", () => {
     expect(
       sql`select * from users where id in (${sql`select id from comments where id=${1}`})`
     ).toMatchObject({
-      text: "select * from users where id in (select id from comments where id=?)",
+      text: "select * from users where id in (select id from comments where id=❓)",
       values: [1],
     });
   });
@@ -91,7 +93,7 @@ describe("substitutions", () => {
     }
 
     expect(sql`select * from users where ${await policy()}`).toMatchObject({
-      text: "select * from users where deleted_at=?",
+      text: "select * from users where deleted_at=❓",
       values: [false],
     });
   });
@@ -137,7 +139,7 @@ describe("substitutions", () => {
         public: true,
       })}`
     ).toMatchObject({
-      text: `select * from users where ("id" = ? or "public" = ?)`,
+      text: `select * from users where ("id" = ❓ or "public" = ❓)`,
       values: [1, true],
     });
   });
@@ -146,7 +148,7 @@ describe("substitutions", () => {
     expect(
       sql`select * from users where id in (${sql.array([1, 2, 3])})`
     ).toMatchObject({
-      text: "select * from users where id in (?, ?, ?)",
+      text: "select * from users where id in (❓, ❓, ❓)",
       values: [1, 2, 3],
     });
   });
@@ -178,7 +180,7 @@ describe("substitutions", () => {
         number: 0,
       })}`
     ).toMatchObject({
-      text: 'select * from users where ("name" = ? and "number" = ?)',
+      text: 'select * from users where ("name" = ❓ and "number" = ❓)',
       values: ["Ryan", 0],
     });
   });
@@ -190,7 +192,7 @@ describe("substitutions", () => {
         number: null,
       })}`
     ).toMatchObject({
-      text: 'select * from users where ("name" = ? and "number" is null)',
+      text: 'select * from users where ("name" = ❓ and "number" is null)',
       values: ["Ryan"],
     });
   });
@@ -202,7 +204,7 @@ describe("substitutions", () => {
         number: 0,
       })}`
     ).toMatchObject({
-      text: 'insert into users ("name", "number") values (?, ?)',
+      text: 'insert into users ("name", "number") values (❓, ❓)',
       values: ["Ryan", 0],
     });
   });
@@ -220,7 +222,7 @@ describe("substitutions", () => {
         },
       ])}`
     ).toMatchObject({
-      text: 'insert into users ("name", "number") values (?, ?), (?, ?)',
+      text: 'insert into users ("name", "number") values (❓, ❓), (❓, ❓)',
       values: ["Ryan", 0, "Nolan", 1],
     });
   });
@@ -232,7 +234,7 @@ describe("substitutions", () => {
         active: true,
       })}`
     ).toMatchObject({
-      text: 'update users set "name" = ?, "active" = ?',
+      text: 'update users set "name" = ❓, "active" = ❓',
       values: ["Ryan", true],
     });
   });
@@ -244,7 +246,7 @@ describe("substitutions", () => {
         active: true,
       })}`
     ).toMatchObject({
-      text: 'update users set "name" = ?, "active" = ?',
+      text: 'update users set "name" = ❓, "active" = ❓',
       values: ["Ryan", true],
     });
   });
@@ -253,7 +255,7 @@ describe("substitutions", () => {
     expect(
       sql`select * from table_name where ${sql.and({ val: 1, val2: false })}`
     ).toMatchObject({
-      text: 'select * from table_name where ("val" = ? and "val2" = ?)',
+      text: 'select * from table_name where ("val" = ❓ and "val2" = ❓)',
       values: [1, false],
     });
   });

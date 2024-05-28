@@ -80,7 +80,7 @@ export class SqlFragment {
     let text = this.text;
 
     values.push(...this.values);
-    let segments = text.split(/\?/i);
+    let segments = text.split(/❓/i);
     text = segments
       .map((segment, index) => {
         if (index + 1 === segments.length) return segment;
@@ -153,7 +153,7 @@ class SqlStatement extends SqlFragment {
 
     let stmt = new SqlStatement(
       this.query,
-      `select paginated.* from (${this.text}) paginated limit ? offset ?`,
+      `select paginated.* from (${this.text}) paginated limit ❓ offset ❓`,
       [...this.values, per, page * per],
       this.options
     );
@@ -229,7 +229,7 @@ function connect(
       throw new Error("invalid value in query: " + JSON.stringify(value));
     }
 
-    return new SqlFragment("?", [value]);
+    return new SqlFragment("❓", [value]);
   }
 
   function sqlTemplateTag(
@@ -363,7 +363,7 @@ function connect(
     ref: (identifier: string) =>
       new SqlFragment(escapeIdentifier(identifier), []),
     raw: (text: string) => new SqlFragment(text, []),
-    literal: (value: any) => new SqlFragment("?", [value]),
+    literal: (value: any) => new SqlFragment("❓", [value]),
     join: (delimiter: SqlFragment, [first, ...statements]: SqlFragment[]) =>
       statements.reduce((acc, item) => sql`${acc}${delimiter}${item}`, first),
     array<T extends InterpolatedValue>(values: T[]) {
