@@ -8,12 +8,23 @@ export { connect };
 type InterpolatedValue = number | string | boolean | Date | SqlFragment | null;
 
 const dedent = (str: string) => {
-  str = str.trim();
-  const match = str.match(/^[ \t]*(?=\S)/gm);
-  return match === null
-    ? str
-    : str.replace(new RegExp(`^[ \\t]{${match[0].length}}`, "gm"), "");
+  const matches = str.match(/^[ \t]*(?=\S)/gm);
+
+  if (!matches) return str;
+
+  const shortest = matches.reduce((min, current) => {
+    return current.length < min.length ? current : min;
+  });
+
+  const shortestWhitespaceRegex = new RegExp(`^${shortest}`, "g");
+
+  return str
+    .split("\n")
+    .map((line) => line.replace(shortestWhitespaceRegex, ""))
+    .join("\n");
 };
+
+const rawSymbol = Symbol("dangerously execute raw SQL");
 
 export type Sql = ((
   strings: TemplateStringsArray,
@@ -32,7 +43,7 @@ export type Sql = ((
   impureTransaction: <T>(caller: (trxSql: Sql) => Promise<T>) => Promise<T>;
   connection: <T>(caller: (sql: Sql) => Promise<T>) => Promise<T>;
   ref: (identifier: string) => SqlFragment;
-  raw: (text: string) => SqlFragment;
+  [rawSymbol]: (text: string) => SqlFragment;
   literal: (value: any) => SqlFragment;
   join: (
     delimiter: SqlFragment,
@@ -94,11 +105,10 @@ export class SqlFragment {
         if (index + 1 === segments.length) return segment;
         return `${segment}$${index + 1}`;
       })
-      .join("")
-      .trim();
+      .join("");
 
     return {
-      text: dedent(text),
+      text: dedent(text).trim(),
       values,
     };
   }
@@ -314,7 +324,7 @@ function connect(
       let txId = (isClientInTransactionWeakMap.get(trxSql) || 0) + 1;
       isClientInTransactionWeakMap.set(trxSql, txId);
       let txName = `tx_${txId}`;
-      let id = sql.raw(txName);
+      let id = sql[rawSymbol](txName);
       if (!isInSubTransaction) {
         debugTransaction(`begin ${txName}`);
         await trxSql`begin`.exec();
@@ -369,7 +379,7 @@ function connect(
     connection,
     ref: (identifier: string) =>
       new SqlFragment(escapeIdentifier(identifier), []),
-    raw: (text: string) => new SqlFragment(text, []),
+    [rawSymbol]: (text: string) => new SqlFragment(text, []),
     literal: (value: any) => new SqlFragment("❓", [value]),
     join: (delimiter: SqlFragment, [first, ...statements]: SqlFragment[]) =>
       statements.reduce((acc, item) => sql`${acc}${delimiter}${item}`, first),
@@ -391,7 +401,7 @@ function connect(
       ]);
       return sql`(${sql.join(
         sql`, `,
-        Array.from(keys).map((key) => sql.raw(sanitizeIdentifier(key)))
+        Array.from(keys).map((key) => sql[rawSymbol](sanitizeIdentifier(key)))
       )}) values ${sql.join(
         sql`, `,
         values.map(
@@ -411,7 +421,7 @@ function connect(
       return sql`set ${sql.join(
         sql`, `,
         Object.keys(values).map(
-          (v) => sql`${sql.raw(sanitizeIdentifier(v))} = ${values[v]}`
+          (v) => sql`${sql[rawSymbol](sanitizeIdentifier(v))} = ${values[v]}`
         )
       )}`;
     },
@@ -424,8 +434,8 @@ function connect(
         sql` and `,
         Object.keys(values).map((v) =>
           values[v] === null
-            ? sql`${sql.raw(sanitizeIdentifier(v))} is null`
-            : sql`${sql.raw(sanitizeIdentifier(v))} = ${values[v]}`
+            ? sql`${sql[rawSymbol](sanitizeIdentifier(v))} is null`
+            : sql`${sql[rawSymbol](sanitizeIdentifier(v))} = ${values[v]}`
         )
       )})`;
     },
@@ -438,8 +448,8 @@ function connect(
         sql` or `,
         Object.keys(values).map((v) =>
           values[v] === null
-            ? sql`${sql.raw(sanitizeIdentifier(v))} is null`
-            : sql`${sql.raw(sanitizeIdentifier(v))} = ${values[v]}`
+            ? sql`${sql[rawSymbol](sanitizeIdentifier(v))} is null`
+            : sql`${sql[rawSymbol](sanitizeIdentifier(v))} = ${values[v]}`
         )
       )})`;
     },

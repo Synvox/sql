@@ -122,14 +122,14 @@ describe("substitutions", () => {
     ).toMatchInlineSnapshot(`
       {
         "text": "select *
-              from (select * from users where id = $1) users
-              where id = 1
-              and where exists (
-                select *
-                from (select * from posts) posts
-                where users.id = posts.user_id
-              )
-              limit $2",
+      from (select * from users where id = $1) users
+      where id = 1
+      and where exists (
+        select *
+        from (select * from posts) posts
+        where users.id = posts.user_id
+      )
+      limit $2",
         "values": [
           "abc",
           1,
@@ -567,7 +567,7 @@ describe("connects to postgres", () => {
       );
     `.exec();
 
-    await sql`
+    const multiLineStmt = sql`
       begin;
         insert into test.logs (body) values ('hello1');
         insert into test.logs (body) values ('hello2');
@@ -577,7 +577,11 @@ describe("connects to postgres", () => {
         delete from test.logs where body='hello1';
         insert into test.logs(body) select string_agg(logs2.body, ', ') from logs2;
       commit;
-    `.exec();
+    `;
+    expect(multiLineStmt.toNative().text).toEqual(
+      "begin;\n  insert into test.logs (body) values ('hello1');\n  insert into test.logs (body) values ('hello2');\n  select *\n  into temp logs2\n  from test.logs;\n  delete from test.logs where body='hello1';\n  insert into test.logs(body) select string_agg(logs2.body, ', ') from logs2;\ncommit;"
+    );
+    await multiLineStmt.exec();
 
     let rows = await sql`select * from test.logs`.all();
 
@@ -591,35 +595,6 @@ describe("connects to postgres", () => {
           "body": "hello1, hello2",
           "id": 3,
         },
-      ]
-    `);
-
-    let stmt = sql`
-      select * from test.logs where id = ${sql.raw("2")};
-      select * from test.logs where id = ${sql.raw("3")};
-    `;
-
-    expect(stmt.preview()).toMatchInlineSnapshot(`
-      "select * from test.logs where id = 2;
-            select * from test.logs where id = 3;"
-    `);
-
-    let results = await stmt.exec();
-
-    expect((results as any).map((r: any) => r.rows)).toMatchInlineSnapshot(`
-      [
-        [
-          {
-            "body": "hello2",
-            "id": 2,
-          },
-        ],
-        [
-          {
-            "body": "hello1, hello2",
-            "id": 3,
-          },
-        ],
       ]
     `);
   });
@@ -704,17 +679,17 @@ describe("connects to postgres", () => {
     expect(stmt.toNative()).toMatchInlineSnapshot(`
       {
         "text": "select *
-            from (
-              select *
-              from test.posts
-              where exists (
-                select *
-                from test.post_likes
-                where post_likes.post_id = posts.id
-                and user_id = $1
-              )
-            ) posts
-            where id = $2",
+      from (
+        select *
+        from test.posts
+        where exists (
+          select *
+          from test.post_likes
+          where post_likes.post_id = posts.id
+          and user_id = $1
+        )
+      ) posts
+      where id = $2",
         "values": [
           1,
           1,
