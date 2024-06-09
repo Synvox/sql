@@ -119,10 +119,23 @@ describe("substitutions", () => {
         )
         limit ${1}
       `.toNative()
-    ).toMatchObject({
-      text: "select * from (select * from users where id = $1) users where id = 1 and where exists ( select * from (select * from posts) posts where users.id = posts.user_id ) limit $2",
-      values: ["abc", 1],
-    });
+    ).toMatchInlineSnapshot(`
+      {
+        "text": "select *
+              from (select * from users where id = $1) users
+              where id = 1
+              and where exists (
+                select *
+                from (select * from posts) posts
+                where users.id = posts.user_id
+              )
+              limit $2",
+        "values": [
+          "abc",
+          1,
+        ],
+      }
+    `);
   });
 
   it("supports raw substitutions", () => {
@@ -586,9 +599,10 @@ describe("connects to postgres", () => {
       select * from test.logs where id = ${sql.raw("3")};
     `;
 
-    expect(stmt.preview()).toMatchInlineSnapshot(
-      `"select * from test.logs where id = 2; select * from test.logs where id = 3;"`
-    );
+    expect(stmt.preview()).toMatchInlineSnapshot(`
+      "select * from test.logs where id = 2;
+            select * from test.logs where id = 3;"
+    `);
 
     let results = await stmt.exec();
 
@@ -689,7 +703,18 @@ describe("connects to postgres", () => {
 
     expect(stmt.toNative()).toMatchInlineSnapshot(`
       {
-        "text": "select * from ( select * from test.posts where exists ( select * from test.post_likes where post_likes.post_id = posts.id and user_id = $1 ) ) posts where id = $2",
+        "text": "select *
+            from (
+              select *
+              from test.posts
+              where exists (
+                select *
+                from test.post_likes
+                where post_likes.post_id = posts.id
+                and user_id = $1
+              )
+            ) posts
+            where id = $2",
         "values": [
           1,
           1,

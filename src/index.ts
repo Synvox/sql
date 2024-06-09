@@ -7,6 +7,14 @@ export { connect };
 
 type InterpolatedValue = number | string | boolean | Date | SqlFragment | null;
 
+const dedent = (str: string) => {
+  str = str.trim();
+  const match = str.match(/^[ \t]*(?=\S)/gm);
+  return match === null
+    ? str
+    : str.replace(new RegExp(`^[ \\t]{${match[0].length}}`, "gm"), "");
+};
+
 export type Sql = ((
   strings: TemplateStringsArray,
   ...values: InterpolatedValue[]
@@ -87,11 +95,10 @@ export class SqlFragment {
         return `${segment}$${index + 1}`;
       })
       .join("")
-      .replace(/(\s)+/g, " ")
       .trim();
 
     return {
-      text,
+      text: dedent(text),
       values,
     };
   }
