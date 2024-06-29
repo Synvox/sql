@@ -93,8 +93,14 @@ it("supports migrations sequentially", async () => {
   });
 
   await interceptConsole(async (messages) => {
-    await migrate(sql, `${__dirname}/migrations/a/2`);
-    expect(messages).toMatchObject(["Migrated 1 file"]);
+    await Promise.all([
+      migrate(sql, `${__dirname}/migrations/a/2`),
+      migrate(sql, `${__dirname}/migrations/a/2`),
+    ]);
+    expect(messages.sort()).toMatchObject([
+      "Migrated 0 files", // make sure two migrations run in parallel don't run twice
+      "Migrated 1 file",
+    ]);
   });
 
   expect(

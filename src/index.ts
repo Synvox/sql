@@ -1,6 +1,7 @@
 import Debug from "debug";
 import { caseMethods, transformKey, transformKeys } from "./case";
 import { escapeIdentifier, escapeLiteral } from "./escape";
+import { getRandomValues } from "crypto";
 
 export { connect };
 
@@ -212,9 +213,15 @@ function connect(
   {
     caseMethod = "snake",
     deadlockRetryCount = 5,
+    beginTransactionCommand = "begin",
+    rollbackTransactionCommand = "rollback",
+    commitTransactionCommand = "commit",
   }: {
     caseMethod?: "snake" | "camel" | "none";
     deadlockRetryCount?: number;
+    beginTransactionCommand?: string;
+    rollbackTransactionCommand?: string;
+    commitTransactionCommand?: string;
   } = {}
 ): Sql {
   if (!(client instanceof Client)) {
@@ -318,51 +325,54 @@ function connect(
   async function impureTransaction<T>(
     caller: (trxSql: Sql) => Promise<T>
   ): Promise<T> {
-    return await connection(async (trxSql) => {
-      let isInSubTransaction = isClientInTransactionWeakMap.has(trxSql);
-      let txId = (isClientInTransactionWeakMap.get(trxSql) || 0) + 1;
-      isClientInTransactionWeakMap.set(trxSql, txId);
-      let txName = `tx_${txId}`;
-      let id = sql[rawSymbol](txName);
-      if (!isInSubTransaction) {
-        debugTransaction(`begin ${txName}`);
-        await trxSql`begin`.exec();
-      } else {
-        debugTransaction(`savepoint ${txName}`);
-        await trxSql`savepoint ${id}`.exec();
-      }
+    let txId = getRandomValues(new Uint32Array(1))[0].toString(16);
+    let txName = `tx_${txId}`;
+    let id = sql[rawSymbol](txName);
+    return await connection(
+      async (trxSql) => {
+        await trxSql`${sql[rawSymbol](beginTransactionCommand)}`.exec();
 
-      try {
-        let result = await caller(trxSql);
-        if (isInSubTransaction) {
-          debugTransaction(`release ${txName}`);
-          await trxSql`release savepoint ${id}`.exec();
-        } else {
-          debugTransaction(`commit ${txName}`);
-          await trxSql`commit`.exec();
+        try {
+          let result = await caller(trxSql);
+          await trxSql`${sql[rawSymbol](commitTransactionCommand)}`.exec();
+          return result;
+        } catch (e) {
+          await trxSql`${sql[rawSymbol](rollbackTransactionCommand)}`.exec();
+          throw e;
         }
-        return result;
-      } catch (e) {
-        if (isInSubTransaction) {
-          debugTransaction(`rollback to ${txName}`);
-          await trxSql`rollback to savepoint ${id}`.exec();
-        } else {
-          debugTransaction(`rollback ${txName}`);
-          await trxSql`rollback`.exec();
-        }
-        throw e;
-      } finally {
-        if (!isInSubTransaction) isClientInTransactionWeakMap.delete(trxSql);
+      },
+      {
+        beginTransactionCommand: `savepoint ${id};`,
+        rollbackTransactionCommand: `rollback to ${id};`,
+        commitTransactionCommand: `release ${id};`,
       }
-    });
+    );
   }
 
-  async function connection<T>(caller: (sql: Sql) => Promise<T>): Promise<T> {
+  async function connection<T>(
+    caller: (sql: Sql) => Promise<T>,
+    {
+      beginTransactionCommand,
+      rollbackTransactionCommand,
+      commitTransactionCommand,
+    }: {
+      beginTransactionCommand?: string;
+      rollbackTransactionCommand?: string;
+      commitTransactionCommand?: string;
+    } = {}
+  ): Promise<T> {
     let createConnection = client instanceof Pool;
     let connectionClient = createConnection
       ? await (client as Pool).isolate()
       : client;
-    let s = createConnection ? connect(connectionClient, { caseMethod }) : sql;
+    let s = createConnection
+      ? connect(connectionClient, {
+          caseMethod,
+          beginTransactionCommand,
+          rollbackTransactionCommand,
+          commitTransactionCommand,
+        })
+      : sql;
 
     try {
       return caller(s);

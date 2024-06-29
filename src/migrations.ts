@@ -5,6 +5,28 @@ import type { Sql } from ".";
 
 let regex = /^\d+_[^.]*\.(js|ts|mjs|cjs)$/;
 
+async function lock(sql: Sql) {
+  // postgres has a `lock table` statement, but this has better support
+  const row = await sql`
+    update migrations.migrations_lock
+    set is_locked = true
+    where is_locked = false
+    returning is_locked
+  `.first<{
+    isLocked: boolean;
+  }>();
+  if (!row) {
+    throw new Error("Migration is locked");
+  }
+}
+
+async function unlock(sql: Sql) {
+  await sql`
+    update migrations.migrations_lock
+    set is_locked = false
+  `.exec();
+}
+
 export async function migrate(sql: Sql, directory: string) {
   await setup(sql);
 
@@ -18,11 +40,10 @@ export async function migrate(sql: Sql, directory: string) {
   ) as Record<string, { up?: (sql: Sql) => Promise<void> }>;
 
   let count = await sql.transaction(async (sql) => {
-    await sql`lock table migrations.migrations`.exec();
-
+    await lock(sql);
     let migrations = await sql`
-      select name from migrations.migrations
-    `.all<{ name: string }>();
+        select name from migrations.migrations
+      `.all<{ name: string }>();
 
     let missing = migrations.filter((migration) => !files[migration.name]);
     if (missing.length > 0) {
@@ -75,6 +96,7 @@ export async function migrate(sql: Sql, directory: string) {
       }
     }
 
+    await unlock(sql);
     return Object.keys(toMigrate).length;
   });
 
@@ -94,8 +116,7 @@ export async function seed(sql: Sql, directory: string) {
   ) as Record<string, { seed?: (sql: Sql) => Promise<void> }>;
 
   let count = await sql.transaction(async (sql) => {
-    await sql`lock table migrations.migrations`.exec();
-
+    await lock(sql);
     for (let [file, { seed }] of Object.entries(files)) {
       if (typeof seed !== "function") {
         throw new Error(`expected ${file} to have a export a seed function`);
@@ -103,7 +124,7 @@ export async function seed(sql: Sql, directory: string) {
 
       await seed(sql);
     }
-
+    await unlock(sql);
     return Object.keys(files).length;
   });
 
@@ -189,6 +210,13 @@ export async function types(
 async function setup(sql: Sql) {
   await sql`
     create schema if not exists migrations;
+
+    create table if not exists migrations.migrations_lock (
+      is_locked boolean primary key not null default false
+    );
+
+    insert into migrations.migrations_lock (is_locked)
+    values (false) on conflict do nothing;
 
     create table if not exists migrations.migrations (
       id serial primary key,
