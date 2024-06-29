@@ -1,15 +1,8 @@
 import fs from "fs";
-import { PoolClient as PGPoolClient, Pool as PGPool } from "pg";
+import { Pool as PGPool } from "pg";
 import { afterAll, beforeEach, expect, it } from "vitest";
-import {
-  PoolClient,
-  Client,
-  SqlFragment,
-  connect,
-  migrate,
-  seed,
-  types,
-} from "../src";
+import { Client, SqlFragment, connect } from "../src";
+import { migrate, seed, types } from "../src/migrations";
 
 let client = new PGPool();
 

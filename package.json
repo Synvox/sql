@@ -39,5 +39,9 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./migrations": "./dist/migrations.js"
   }
 }

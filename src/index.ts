@@ -2,7 +2,6 @@ import Debug from "debug";
 import { caseMethods, transformKey, transformKeys } from "./case";
 import { escapeIdentifier, escapeLiteral } from "./escape";
 
-export { migrate, seed, types } from "./migrations";
 export { connect };
 
 type InterpolatedValue = number | string | boolean | Date | SqlFragment | null;
