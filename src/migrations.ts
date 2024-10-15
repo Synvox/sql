@@ -138,9 +138,13 @@ export type TypeOptions = {
 export async function types(
   sql: Sql,
   outfile: string,
-  schemaNames?: string[],
+  schemaNames?: string[] | Record<string, true | string[]>,
   options?: TypeOptions
 ) {
+  if (!schemaNames) schemaNames = {};
+  else if (Array.isArray(schemaNames))
+    schemaNames = Object.fromEntries(schemaNames.map((s) => [s, true]));
+
   let tables = await sql`
     select
       table_schema,
@@ -161,14 +165,19 @@ export async function types(
         case when is_nullable = 'YES' then true else false end as is_nullable,
         ordinal_position
       from information_schema.columns
-      where table_schema ${
-        schemaNames
-          ? sql`in (${sql.join(
-              sql`, `,
-              schemaNames.map((s) => sql`${s}`)
-            )})`
-          : sql`not in ('information_schema', 'pg_catalog')`
-      }
+      where (${
+        Object.entries(schemaNames || {}).length === 0
+          ? sql`true`
+          : sql.join(
+              sql` or `,
+              Object.entries(schemaNames).map(([schema, tables]) =>
+                tables === true
+                  ? sql`(table_schema = ${schema})`
+                  : sql`(table_schema = ${schema} and table_name in (${sql.array(tables)}))`
+              )
+            )
+      })
+      and table_schema not in ('information_schema', 'pg_catalog')
       order by table_schema, table_name, ordinal_position
     ) x
     group by table_schema, table_name

@@ -367,3 +367,30 @@ it("supports outputting types", async () => {
       "
     `);
 });
+
+it("supports outputting types but excluding some tables", async () => {
+  await interceptConsole(async (messages) => {
+    await migrate(sql, `${__dirname}/migrations/c`);
+    expect(messages).toMatchObject(["Migrated 1 file"]);
+  });
+
+  await interceptConsole(async (messages) => {
+    await seed(sql, `${__dirname}/seeds`);
+    expect(messages).toMatchObject(["Seeded 1 file"]);
+  });
+
+  await types(sql, `${__dirname}/types/types2.ts`, {
+    test_migrations: ["notes"],
+  });
+
+  expect(await fs.promises.readFile(`${__dirname}/types/types2.ts`, "utf8"))
+    .toMatchInlineSnapshot(`
+    "export type Note = {
+      id: string;
+      body: string;
+      authorId: string;
+      createdAt: Date;
+    }
+    "
+  `);
+});
