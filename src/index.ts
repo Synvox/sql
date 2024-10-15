@@ -206,22 +206,20 @@ class SqlStatement extends SqlFragment {
   }
 }
 
-let isClientInTransactionWeakMap = new WeakMap<Sql>();
-
 function connect(
   client: Client,
   {
     caseMethod = "snake",
     deadlockRetryCount = 5,
-    beginTransactionCommand = "begin",
-    rollbackTransactionCommand = "rollback",
-    commitTransactionCommand = "commit",
+    beginTransactionCommand = new SqlFragment("begin", []),
+    rollbackTransactionCommand = new SqlFragment("rollback", []),
+    commitTransactionCommand = new SqlFragment("commit", []),
   }: {
     caseMethod?: "snake" | "camel" | "none";
     deadlockRetryCount?: number;
-    beginTransactionCommand?: string;
-    rollbackTransactionCommand?: string;
-    commitTransactionCommand?: string;
+    beginTransactionCommand?: SqlFragment;
+    rollbackTransactionCommand?: SqlFragment;
+    commitTransactionCommand?: SqlFragment;
   } = {}
 ): Sql {
   if (!(client instanceof Client)) {
@@ -327,24 +325,24 @@ function connect(
   ): Promise<T> {
     let txId = getRandomValues(new Uint32Array(1))[0].toString(16);
     let txName = `tx_${txId}`;
-    let id = sql[rawSymbol](txName);
+    let id = new SqlFragment(txName, []);
     return await connection(
       async (trxSql) => {
-        await trxSql`${sql[rawSymbol](beginTransactionCommand)}`.exec();
+        await trxSql`${beginTransactionCommand}`.exec();
 
         try {
           let result = await caller(trxSql);
-          await trxSql`${sql[rawSymbol](commitTransactionCommand)}`.exec();
+          await trxSql`${commitTransactionCommand}`.exec();
           return result;
         } catch (e) {
-          await trxSql`${sql[rawSymbol](rollbackTransactionCommand)}`.exec();
+          await trxSql`${rollbackTransactionCommand}`.exec();
           throw e;
         }
       },
       {
-        beginTransactionCommand: `savepoint ${id};`,
-        rollbackTransactionCommand: `rollback to ${id};`,
-        commitTransactionCommand: `release ${id};`,
+        beginTransactionCommand: sql`savepoint ${id};`,
+        rollbackTransactionCommand: sql`rollback to ${id};`,
+        commitTransactionCommand: sql`release ${id};`,
       }
     );
   }
@@ -356,9 +354,9 @@ function connect(
       rollbackTransactionCommand,
       commitTransactionCommand,
     }: {
-      beginTransactionCommand?: string;
-      rollbackTransactionCommand?: string;
-      commitTransactionCommand?: string;
+      beginTransactionCommand?: SqlFragment;
+      rollbackTransactionCommand?: SqlFragment;
+      commitTransactionCommand?: SqlFragment;
     } = {}
   ): Promise<T> {
     let createConnection = client instanceof Pool;
