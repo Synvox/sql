@@ -3,11 +3,15 @@ import { caseMethods, transformKey, transformKeys } from "./case";
 import { escapeIdentifier, escapeLiteral } from "./escape";
 import { getRandomValues } from "crypto";
 
-export { connect };
+export type InterpolatedValue =
+  | number
+  | string
+  | boolean
+  | Date
+  | SqlFragment
+  | null;
 
-type InterpolatedValue = number | string | boolean | Date | SqlFragment | null;
-
-const dedent = (str: string) => {
+function dedent(str: string): string {
   const matches = str.match(/^[ \t]*(?=\S)/gm);
 
   if (!matches) return str;
@@ -22,10 +26,14 @@ const dedent = (str: string) => {
     .split("\n")
     .map((line) => line.replace(shortestWhitespaceRegex, ""))
     .join("\n");
-};
+}
 
 const rawSymbol = Symbol("dangerously execute raw SQL");
 
+/**
+ * The main `Sql` interface is a callable template-tag plus extra methods
+ * for transactions, references, and various query helpers.
+ */
 export type Sql = ((
   strings: TemplateStringsArray,
   ...values: InterpolatedValue[]
@@ -60,10 +68,10 @@ export type Sql = ((
   identifierToDb(key: string): string;
 };
 
-let debugQuery = Debug("sql:query");
-let debugBinding = Debug("sql:binding");
-let debugTransaction = Debug("sql:transaction");
-let debugError = Debug("sql:error");
+const debugQuery = Debug("sql:query");
+const debugBinding = Debug("sql:binding");
+const debugTransaction = Debug("sql:transaction");
+const debugError = Debug("sql:error");
 
 type QueryResult<T> = {
   rows: T[];
@@ -93,13 +101,12 @@ export class SqlFragment {
     this.values = values;
   }
 
-  toNative() {
-    let values: any[] = [];
-
+  toNative(): { text: string; values: InterpolatedValue[] } {
+    const values: InterpolatedValue[] = [];
     let text = this.text;
 
     values.push(...this.values);
-    let segments = text.split(/❓/i);
+    const segments = text.split(/❓/i);
     text = segments
       .map((segment, index) => {
         if (index + 1 === segments.length) return segment;
@@ -112,9 +119,14 @@ export class SqlFragment {
       values,
     };
   }
-  preview() {
-    let { text, values } = this.toNative();
-    return text.replace(/\$\d+/g, () => escapeLiteral(String(values.shift())));
+
+  preview(): string {
+    const { text, values } = this.toNative();
+    return text.replace(/\$\d+/g, () => {
+      const value = values.shift();
+      const str = typeof value === "string" ? value : JSON.stringify(value);
+      return escapeLiteral(str);
+    });
   }
 }
 
@@ -123,6 +135,7 @@ class SqlStatement extends SqlFragment {
   options: {
     caseMethodFromDb: (typeof caseMethods)[keyof typeof caseMethods];
   };
+
   constructor(
     query: typeof SqlStatement.prototype.query,
     text: string,
@@ -136,13 +149,14 @@ class SqlStatement extends SqlFragment {
       ...options,
     };
   }
+
   async exec() {
-    let { text, values } = this.toNative();
+    const { text, values } = this.toNative();
 
     debugQuery(text);
     debugBinding(values);
     try {
-      let result = await this.query(text, values);
+      const result = await this.query(text, values);
       return result;
     } catch (e) {
       debugError("Query failed: ", this.preview());
@@ -150,15 +164,16 @@ class SqlStatement extends SqlFragment {
       throw e;
     }
   }
+
   async all<T>() {
-    let result = await this.exec();
-    if (typeof result.rows === "undefined")
-      throw new Error('Multiple statements in query, use "exec" instead.');
-
-    let items = transformKeys(result.rows, this.options.caseMethodFromDb);
-
+    const result = await this.exec();
+    if (typeof result.rows === "undefined") {
+      throw new Error('Multiple statements in query; use "exec" instead.');
+    }
+    const items = transformKeys(result.rows, this.options.caseMethodFromDb);
     return items as T[];
   }
+
   async paginate<T>({
     page = 0,
     per = 250,
@@ -166,22 +181,24 @@ class SqlStatement extends SqlFragment {
     page?: number;
     per?: number;
   } = {}): Promise<T[]> {
-    page = Math.max(0, page);
+    const safePage = Math.max(0, page);
 
-    let stmt = new SqlStatement(
+    const stmt = new SqlStatement(
       this.query,
       `select paginated.* from (${this.text}) paginated limit ❓ offset ❓`,
-      [...this.values, per, page * per],
+      [...this.values, per, safePage * per],
       this.options
     );
 
     return stmt.all<T>();
   }
+
   async first<T>() {
-    let result = await this.all<T>();
-    let item = result[0];
+    const result = await this.all<T>();
+    const item = result[0];
     return item as T;
   }
+
   async count() {
     const stmt = new SqlStatement(
       this.query,
@@ -189,10 +206,10 @@ class SqlStatement extends SqlFragment {
       this.values,
       this.options
     );
-
     const result = await stmt.first<{ count: number }>();
     return Number(result.count);
   }
+
   async exists() {
     const stmt = new SqlStatement(
       this.query,
@@ -200,13 +217,15 @@ class SqlStatement extends SqlFragment {
       this.values,
       this.options
     );
-
     const result = await stmt.first<{ exists: boolean }>();
     return result.exists;
   }
 }
 
-function connect(
+/**
+ * Connects a Client (or Pool) with a custom configuration to create a new Sql instance.
+ */
+export function connect(
   client: Client,
   {
     caseMethod = "snake",
@@ -226,22 +245,24 @@ function connect(
     throw new Error("Invalid client");
   }
 
-  let query = (text: string, values: InterpolatedValue[]) => {
+  function queryFn(text: string, values: InterpolatedValue[]) {
     return client.query(text, values);
-  };
+  }
 
-  let caseMethodFromDb = caseMethods["camel"];
-  let caseMethodToDb = caseMethods[caseMethod];
+  const caseMethodFromDb = caseMethods["camel"];
+  const caseMethodToDb = caseMethods[caseMethod];
 
-  let sanitizeIdentifier = (key: string) =>
-    escapeIdentifier(transformKey(key, caseMethodToDb));
+  function sanitizeIdentifier(key: string): string {
+    return escapeIdentifier(transformKey(key, caseMethodToDb));
+  }
 
-  function toSqlFragment(value: InterpolatedValue) {
-    if (value instanceof SqlFragment) return value;
-
-    if (value === undefined)
+  function toSqlFragment(value: InterpolatedValue): SqlFragment {
+    if (value instanceof SqlFragment) {
+      return value;
+    }
+    if (value === undefined) {
       throw new Error("cannot bind undefined value to query");
-
+    }
     if (
       typeof value === "object" &&
       value !== null &&
@@ -249,47 +270,42 @@ function connect(
     ) {
       throw new Error("invalid value in query: " + JSON.stringify(value));
     }
-
     return new SqlFragment("❓", [value]);
   }
 
   function sqlTemplateTag(
     strings: TemplateStringsArray,
     ...values: InterpolatedValue[]
-  ) {
-    let state: {
-      text: string;
-      values: InterpolatedValue[];
-    } = {
+  ): SqlStatement {
+    const state: { text: string; values: InterpolatedValue[] } = {
       text: "",
       values: [],
     };
 
     for (let index = 0; index < strings.length; index++) {
-      let item = strings[index];
-      state.text += item;
+      state.text += strings[index];
 
-      // last item
+      // Not beyond the last interpolation
       if (!(index in values)) {
         continue;
       }
 
-      let arg = values[index];
-
-      if (arg === undefined)
+      const arg = values[index];
+      if (arg === undefined) {
         throw new Error("cannot bind undefined value to query");
+      }
 
-      arg = toSqlFragment(arg);
-      state.text += arg.text;
-      state.values.push(...arg.values);
+      const fragment = toSqlFragment(arg);
+      state.text += fragment.text;
+      state.values.push(...fragment.values);
     }
 
-    return new SqlStatement(query, state.text, state.values, {
+    return new SqlStatement(queryFn, state.text, state.values, {
       caseMethodFromDb,
     });
   }
 
-  async function transaction<T>(caller: (trxSql: Sql) => Promise<T>) {
+  function transactionFn<T>(caller: (trxSql: Sql) => Promise<T>): Promise<T> {
     return transactionInner(caller);
   }
 
@@ -303,7 +319,7 @@ function connect(
     }
 
     try {
-      return await impureTransaction(caller);
+      return await impureTransactionFn(caller);
     } catch (e) {
       if (e instanceof Error && e.message === "deadlock detected") {
         debugTransaction(`retrying transaction due to deadlock`);
@@ -312,26 +328,27 @@ function connect(
           throw e;
         }
 
-        let delay = attemptNumber * 100;
+        const delay = attemptNumber * 100;
         await new Promise((resolve) => setTimeout(resolve, delay));
-        return transactionInner(caller, retryCount, attemptNumber);
+        return transactionInner(caller, retryCount, attemptNumber + 1);
       }
       throw e;
     }
   }
 
-  async function impureTransaction<T>(
+  function impureTransactionFn<T>(
     caller: (trxSql: Sql) => Promise<T>
   ): Promise<T> {
-    let txId = getRandomValues(new Uint32Array(1))[0].toString(16);
-    let txName = `tx_${txId}`;
-    let id = new SqlFragment(txName, []);
-    return await connection(
+    const txId = getRandomValues(new Uint32Array(1))[0].toString(16);
+    const txName = `tx_${txId}`;
+    const id = new SqlFragment(txName, []);
+
+    return connectionFn(
       async (trxSql) => {
         await trxSql`${beginTransactionCommand}`.exec();
 
         try {
-          let result = await caller(trxSql);
+          const result = await caller(trxSql);
           await trxSql`${commitTransactionCommand}`.exec();
           return result;
         } catch (e) {
@@ -340,14 +357,14 @@ function connect(
         }
       },
       {
-        beginTransactionCommand: sql`savepoint ${id};`,
-        rollbackTransactionCommand: sql`rollback to ${id};`,
-        commitTransactionCommand: sql`release ${id};`,
+        beginTransactionCommand: sql`${new SqlFragment(`savepoint ${txName}`, [])}`,
+        rollbackTransactionCommand: sql`${new SqlFragment(`rollback to ${txName}`, [])}`,
+        commitTransactionCommand: sql`${new SqlFragment(`release ${txName}`, [])}`,
       }
     );
   }
 
-  async function connection<T>(
+  async function connectionFn<T>(
     caller: (sql: Sql) => Promise<T>,
     {
       beginTransactionCommand,
@@ -359,11 +376,12 @@ function connect(
       commitTransactionCommand?: SqlFragment;
     } = {}
   ): Promise<T> {
-    let createConnection = client instanceof Pool;
-    let connectionClient = createConnection
+    const createConnection = client instanceof Pool;
+    const connectionClient = createConnection
       ? await (client as Pool).isolate()
       : client;
-    let s = createConnection
+
+    const s = createConnection
       ? connect(connectionClient, {
           caseMethod,
           beginTransactionCommand,
@@ -375,43 +393,68 @@ function connect(
     try {
       return caller(s);
     } finally {
-      if (connectionClient !== client && connectionClient instanceof PoolClient)
+      if (
+        connectionClient !== client &&
+        connectionClient instanceof PoolClient
+      ) {
         connectionClient.release();
+      }
     }
   }
 
-  let sql = Object.assign(sqlTemplateTag, {
-    transaction,
-    impureTransaction,
-    connection,
-    ref: (identifier: string) =>
-      new SqlFragment(escapeIdentifier(identifier), []),
-    [rawSymbol]: (text: string) => new SqlFragment(text, []),
-    literal: (value: any) => new SqlFragment("❓", [value]),
-    join: (delimiter: SqlFragment, [first, ...statements]: SqlFragment[]) =>
-      statements.reduce((acc, item) => sql`${acc}${delimiter}${item}`, first),
-    array<T extends InterpolatedValue>(values: T[]) {
+  // Build the `sql` object. It's a tag function plus extra methods.
+  const sql = Object.assign(sqlTemplateTag, {
+    transaction: transactionFn,
+    impureTransaction: impureTransactionFn,
+    connection: connectionFn,
+
+    ref(identifier: string): SqlFragment {
+      return new SqlFragment(escapeIdentifier(identifier), []);
+    },
+
+    [rawSymbol](text: string): SqlFragment {
+      return new SqlFragment(text, []);
+    },
+
+    literal(value: any): SqlFragment {
+      return new SqlFragment("❓", [value]);
+    },
+
+    join(
+      delimiter: SqlFragment,
+      [first, ...statements]: SqlFragment[]
+    ): SqlFragment {
+      return statements.reduce(
+        (acc, item) => sql`${acc}${delimiter}${item}`,
+        first
+      );
+    },
+
+    array<T extends InterpolatedValue>(values: T[]): SqlStatement {
       return sql`${sql.join(
         sql`, `,
         values.map((v) => sql`${v}`)
       )}`;
     },
-    values<T extends Record<string, InterpolatedValue>>(values: T[] | T) {
-      if (!Array.isArray(values)) values = [values];
 
-      if (values.length === 0) {
+    values<T extends Record<string, InterpolatedValue>>(
+      vals: T | T[]
+    ): SqlStatement {
+      const _vals = Array.isArray(vals) ? vals : [vals];
+      if (_vals.length === 0) {
         throw new Error("values must not be empty");
       }
 
-      let keys = new Set<string>([
-        ...values.map((row) => Object.keys(row)).flat(),
+      const keys = new Set<string>([
+        ..._vals.map((row) => Object.keys(row)).flat(),
       ]);
+
       return sql`(${sql.join(
         sql`, `,
         Array.from(keys).map((key) => sql[rawSymbol](sanitizeIdentifier(key)))
       )}) values ${sql.join(
         sql`, `,
-        values.map(
+        _vals.map(
           (row) =>
             sql`(${sql.join(
               sql`, `,
@@ -420,11 +463,11 @@ function connect(
         )
       )}`;
     },
-    set<T extends Record<string, InterpolatedValue>>(values: T) {
+
+    set<T extends Record<string, InterpolatedValue>>(values: T): SqlStatement {
       if (Object.keys(values).length === 0) {
         throw new Error("values must not be empty");
       }
-
       return sql`set ${sql.join(
         sql`, `,
         Object.keys(values).map(
@@ -432,11 +475,11 @@ function connect(
         )
       )}`;
     },
-    and<T extends Record<string, InterpolatedValue>>(values: T) {
+
+    and<T extends Record<string, InterpolatedValue>>(values: T): SqlStatement {
       if (Object.keys(values).length === 0) {
         throw new Error("values must not be empty");
       }
-
       return sql`(${sql.join(
         sql` and `,
         Object.keys(values).map((v) =>
@@ -446,11 +489,11 @@ function connect(
         )
       )})`;
     },
-    or<T extends Record<string, InterpolatedValue>>(values: T) {
+
+    or<T extends Record<string, InterpolatedValue>>(values: T): SqlStatement {
       if (Object.keys(values).length === 0) {
         throw new Error("values must not be empty");
       }
-
       return sql`(${sql.join(
         sql` or `,
         Object.keys(values).map((v) =>
@@ -460,10 +503,12 @@ function connect(
         )
       )})`;
     },
-    identifierFromDb(key: string) {
+
+    identifierFromDb(key: string): string {
       return transformKey(key, caseMethodFromDb);
     },
-    identifierToDb(key: string) {
+
+    identifierToDb(key: string): string {
       return transformKey(key, caseMethodToDb);
     },
   });

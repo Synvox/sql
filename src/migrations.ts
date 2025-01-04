@@ -142,10 +142,44 @@ export async function types(
   options?: TypeOptions
 ) {
   if (!schemaNames) schemaNames = {};
-  else if (Array.isArray(schemaNames))
+  else if (Array.isArray(schemaNames)) {
     schemaNames = Object.fromEntries(schemaNames.map((s) => [s, true]));
+  }
 
+  // Only "tables (r), views (v), and materialized views (m)"
+  // are included in our query.
   let tables = await sql`
+    with raw as (
+      select
+        n.nspname as table_schema,
+        c.relname as table_name,
+        a.attname as column_name,
+        format_type(a.atttypid, a.atttypmod) as data_type,
+        not a.attnotnull as is_nullable,
+        a.attnum as ordinal_position
+      from pg_attribute a
+      join pg_class c on a.attrelid = c.oid
+      join pg_namespace n on c.relnamespace = n.oid
+      where a.attnum > 0
+        and not a.attisdropped
+        and c.relkind in ('r', 'v', 'm') 
+        and n.nspname not in ('information_schema', 'pg_catalog')
+        and (${
+          Object.entries(schemaNames || {}).length === 0
+            ? sql`true`
+            : sql.join(
+                sql` or `,
+                Object.entries(schemaNames).map(([schema, tableList]) =>
+                  tableList === true
+                    ? sql`(n.nspname = ${schema})`
+                    : sql`(n.nspname = ${schema} and c.relname in (${sql.array(
+                        tableList
+                      )}))`
+                )
+              )
+        })
+      order by n.nspname, c.relname, a.attnum
+    )
     select
       table_schema,
       table_name,
@@ -155,49 +189,28 @@ export async function types(
           'data_type', data_type,
           'is_nullable', is_nullable
         )
+        order by ordinal_position
       ) as columns
-    from (
-      select
-        table_schema,
-        table_name,
-        column_name,
-        data_type,
-        case when is_nullable = 'YES' then true else false end as is_nullable,
-        ordinal_position
-      from information_schema.columns
-      where (${
-        Object.entries(schemaNames || {}).length === 0
-          ? sql`true`
-          : sql.join(
-              sql` or `,
-              Object.entries(schemaNames).map(([schema, tables]) =>
-                tables === true
-                  ? sql`(table_schema = ${schema})`
-                  : sql`(table_schema = ${schema} and table_name in (${sql.array(tables)}))`
-              )
-            )
-      })
-      and table_schema not in ('information_schema', 'pg_catalog')
-      order by table_schema, table_name, ordinal_position
-    ) x
+    from raw
     group by table_schema, table_name
+    order by table_schema, table_name
   `.all<{
     tableSchema: string;
     tableName: string;
     columns: {
       columnName: string;
       dataType: string;
-      isNullable: string;
+      isNullable: boolean;
     }[];
   }>();
 
   let types: string[] = [];
-
   let capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
   for (let table of tables) {
     let name = capitalize(singular(sql.identifierFromDb(table.tableName)));
-    let tableType = "";
-    tableType += `export type ${name} = {\n`;
+    let tableType = `export type ${name} = {\n`;
+
     for (let column of table.columns) {
       let type = postgresTypesToJSONTsTypes(column.dataType, options);
       tableType += `  ${sql.identifierFromDb(column.columnName)}: ${type}${

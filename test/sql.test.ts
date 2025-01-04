@@ -70,6 +70,12 @@ describe("substitutions", () => {
     );
   });
 
+  it("supports objects in .preview", () => {
+    expect(
+      sql`select * from embeddings where vector in (${sql.literal([1, 2, 3])})`.preview()
+    ).toMatchInlineSnapshot(`"select * from embeddings where vector in ('[1,2,3]')"`);
+  });
+
   it("supports dates", () => {
     let d = new Date();
     expect(sql`select * from users where created_at=${d}`).toMatchObject({
@@ -353,7 +359,7 @@ describe("connects to postgres", () => {
     await expect(
       sql`select 2+2; select 4+4`.all()
     ).rejects.toThrowErrorMatchingInlineSnapshot(
-      `[Error: Multiple statements in query, use "exec" instead.]`
+      `[Error: Multiple statements in query; use "exec" instead.]`
     );
 
     expect(
