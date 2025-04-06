@@ -73,7 +73,9 @@ describe("substitutions", () => {
   it("supports objects in .preview", () => {
     expect(
       sql`select * from embeddings where vector in (${sql.literal([1, 2, 3])})`.preview()
-    ).toMatchInlineSnapshot(`"select * from embeddings where vector in ('[1,2,3]')"`);
+    ).toMatchInlineSnapshot(
+      `"select * from embeddings where vector in ('[1,2,3]')"`
+    );
   });
 
   it("supports dates", () => {
@@ -821,6 +823,37 @@ describe("connects to postgres", () => {
       let result = await sql`select * from test.users`.all();
 
       expect(result).toEqual([]);
+    });
+
+    it("disables queries after commit", async () => {
+      let s: typeof sql | null = null;
+
+      await sql.transaction(async (sql) => {
+        s = sql;
+      });
+
+      await expect(() => s!`select 2+2`.exec()).rejects.toMatchInlineSnapshot(
+        `[AbortError: This operation was aborted]`
+      );
+    });
+
+    it("disables queries after rollback", async () => {
+      let s: typeof sql | null = null;
+      let e = new Error();
+      let thrown: typeof e | null = null;
+      try {
+        await sql.transaction(async (sql) => {
+          s = sql;
+          throw e;
+        });
+      } catch (e) {
+        thrown = e;
+      }
+
+      expect(e).toStrictEqual(thrown);
+      await expect(() => s!`select 2+2`.exec()).rejects.toMatchInlineSnapshot(
+        `[AbortError: This operation was aborted]`
+      );
     });
 
     it("deadlocks as expected", async () => {

@@ -233,12 +233,14 @@ export function connect(
     beginTransactionCommand = new SqlFragment("begin", []),
     rollbackTransactionCommand = new SqlFragment("rollback", []),
     commitTransactionCommand = new SqlFragment("commit", []),
+    signal,
   }: {
     caseMethod?: "snake" | "camel" | "none";
     deadlockRetryCount?: number;
     beginTransactionCommand?: SqlFragment;
     rollbackTransactionCommand?: SqlFragment;
     commitTransactionCommand?: SqlFragment;
+    signal?: AbortSignal;
   } = {}
 ): Sql {
   if (!(client instanceof Client)) {
@@ -246,6 +248,7 @@ export function connect(
   }
 
   function queryFn(text: string, values: InterpolatedValue[]) {
+    signal?.throwIfAborted();
     return client.query(text, values);
   }
 
@@ -341,7 +344,8 @@ export function connect(
   ): Promise<T> {
     const txId = getRandomValues(new Uint32Array(1))[0].toString(16);
     const txName = `tx_${txId}`;
-    const id = new SqlFragment(txName, []);
+    const controller = new AbortController();
+    const signal = controller.signal;
 
     return connectionFn(
       async (trxSql) => {
@@ -354,12 +358,15 @@ export function connect(
         } catch (e) {
           await trxSql`${rollbackTransactionCommand}`.exec();
           throw e;
+        } finally {
+          controller.abort();
         }
       },
       {
         beginTransactionCommand: sql`${new SqlFragment(`savepoint ${txName}`, [])}`,
         rollbackTransactionCommand: sql`${new SqlFragment(`rollback to ${txName}`, [])}`,
         commitTransactionCommand: sql`${new SqlFragment(`release ${txName}`, [])}`,
+        signal,
       }
     );
   }
@@ -370,10 +377,12 @@ export function connect(
       beginTransactionCommand,
       rollbackTransactionCommand,
       commitTransactionCommand,
+      signal,
     }: {
       beginTransactionCommand?: SqlFragment;
       rollbackTransactionCommand?: SqlFragment;
       commitTransactionCommand?: SqlFragment;
+      signal?: AbortSignal;
     } = {}
   ): Promise<T> {
     const createConnection = client instanceof Pool;
@@ -387,6 +396,7 @@ export function connect(
           beginTransactionCommand,
           rollbackTransactionCommand,
           commitTransactionCommand,
+          signal,
         })
       : sql;
 
