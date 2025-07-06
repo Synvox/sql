@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { singular } from "pluralize";
+import pluralizePkg from "pluralize";
 import type { Sql } from ".";
+
+// doesn't support esm yet
+const { singular } = pluralizePkg;
 
 let regex = /^\d+_[^.]*\.(js|ts|mjs|cjs)$/;
 
@@ -217,7 +220,7 @@ export async function types(
         column.isNullable ? " | null" : ""
       };\n`;
     }
-    tableType += `}`;
+    tableType += `};`;
     types.push(tableType);
   }
 

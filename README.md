@@ -331,10 +331,11 @@ let migration = sql`
 If you’ve installed the optional migration helpers (or have your own system), you can run migrations with something like:
 
 ```ts
-import { migrate } from "@synvox/sql/migrate"; // Hypothetical import
+import { migrate } from "@synvox/sql/migrations"; // Hypothetical import
+import { resolve } from "node:path";
 
 // Where directoryName is the path to your migration files:
-await migrate(sql, directoryName);
+await migrate(sql, resolve("migrations"));
 ```
 
 A migration file might look like:

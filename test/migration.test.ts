@@ -334,13 +334,13 @@ it("supports outputting types", async () => {
       body: string;
       authorId: string;
       createdAt: Date;
-    }
+    };
 
     export type User = {
       id: string;
       firstName: string;
       lastName: string;
-    }
+    };
     "
   `);
 
@@ -357,13 +357,13 @@ it("supports outputting types", async () => {
         body: string;
         authorId: number;
         createdAt: Date;
-      }
+      };
 
       export type User = {
         id: number;
         firstName: string;
         lastName: string;
-      }
+      };
       "
     `);
 });
@@ -390,7 +390,7 @@ it("supports outputting types but excluding some tables", async () => {
       body: string;
       authorId: string;
       createdAt: Date;
-    }
+    };
     "
   `);
 });
